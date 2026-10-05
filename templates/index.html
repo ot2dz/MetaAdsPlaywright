@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MetaAdsPlaywright — لوحة السحب</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: system-ui, -apple-system, 'Segoe UI', Tahoma, sans-serif; background:#0f1117; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background:#2a2f3a; border-radius:4px; }
+  .num { font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body class="text-slate-200 min-h-screen">
+
+<header class="border-b border-slate-800 bg-slate-900/60 sticky top-0 z-10">
+  <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between gap-4 flex-wrap">
+    <div class="flex items-center gap-3">
+      <span class="text-xl font-bold text-emerald-400">MetaAds<span class="text-slate-200">Playwright</span></span>
+      <span class="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-400" id="db-backend">…</span>
+    </div>
+    <div class="flex items-center gap-4 text-sm">
+      <span>📦 <b class="num" id="stat-total">0</b> إعلان</span>
+      <span>🏪 <b class="num" id="stat-stores">0</b> متجر</span>
+      <button onclick="resetAll()" class="text-rose-400 hover:underline text-xs">مسح الكل</button>
+    </div>
+  </div>
+</header>
+
+<main class="max-w-7xl mx-auto px-4 py-6 space-y-6">
+
+  <!-- Engine -->
+  <section class="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
+    <h2 class="font-bold text-slate-300">⚙️ محرك السحب (Playwright + Stealth)</h2>
+    <div class="grid md:grid-cols-12 gap-3">
+      <input id="q" placeholder="الكلمة المفتاحية أو العبارة…" class="md:col-span-5 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+      <input id="country" value="DZ" class="md:col-span-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+      <select id="sort" class="md:col-span-3 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+        <option value="total_impressions">الأكثر ظهوراً</option>
+        <option value="relevancy_monthly_grouped">الصلة الشهرية</option>
+      </select>
+      <button id="btn-start" onclick="startEngine()" class="md:col-span-3 bg-emerald-600 hover:bg-emerald-500 rounded-lg px-4 py-2 font-bold text-sm">▶ بدء السحب</button>
+    </div>
+    <div class="flex items-center gap-5 text-sm flex-wrap">
+      <label class="flex items-center gap-2"><input type="checkbox" id="exact"> عبارة حرفية</label>
+      <label class="flex items-center gap-2"><input type="checkbox" id="stores_only" checked> المتاجر فقط</label>
+      <button onclick="stopEngine()" class="ms-auto text-rose-400 hover:underline text-xs">⏹ إيقاف</button>
+      <span id="engine-state" class="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-400">متوقف</span>
+    </div>
+  </section>
+
+  <!-- KPIs -->
+  <section class="grid grid-cols-2 md:grid-cols-4 gap-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
+      <div class="text-xs text-slate-400">إعلانات مسحوبة</div><div class="text-2xl font-bold num" id="kpi-scraped">0</div></div>
+    <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
+      <div class="text-xs text-slate-400">متاجر فريدة</div><div class="text-2xl font-bold num text-emerald-400" id="kpi-stores">0</div></div>
+    <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
+      <div class="text-xs text-slate-400">فيسبوك المعلن</div><div class="text-2xl font-bold num text-sky-400" id="kpi-reported">-</div></div>
+    <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
+      <div class="text-xs text-slate-400">محفوظة في القاعدة</div><div class="text-2xl font-bold num" id="kpi-stored">0</div></div>
+  </section>
+
+  <!-- Log -->
+  <section class="bg-slate-900 border border-slate-800 rounded-xl p-4">
+    <div class="text-xs text-slate-400 mb-2">سجل التشغيل</div>
+    <pre id="log" class="text-xs text-slate-400 h-32 overflow-auto whitespace-pre-wrap leading-5"></pre>
+  </section>
+
+  <!-- Tabs -->
+  <div class="flex gap-2">
+    <button onclick="showTab('ads')" id="tab-ads" class="px-4 py-2 rounded-lg bg-emerald-600 text-sm font-bold">الإعلانات</button>
+    <button onclick="showTab('stores')" id="tab-stores" class="px-4 py-2 rounded-lg bg-slate-800 text-sm">المتاجر</button>
+    <div class="ms-auto flex gap-2">
+      <button onclick="exportData('csv')" class="text-xs bg-slate-800 hover:bg-slate-700 rounded px-3 py-1">CSV</button>
+      <button onclick="exportData('json')" class="text-xs bg-slate-800 hover:bg-slate-700 rounded px-3 py-1">JSON</button>
+    </div>
+  </div>
+
+  <section id="view-ads" class="space-y-3">
+    <input id="search" oninput="loadAds()" placeholder="بحث داخل النتائج…" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+    <div id="ads" class="grid md:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+  </section>
+
+  <section id="view-stores" class="hidden overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="text-slate-400 text-xs"><tr class="border-b border-slate-800">
+        <th class="text-right py-2">المتجر</th><th class="text-right">المنصة</th><th class="text-right">عدد الإعلانات</th></tr></thead>
+      <tbody id="stores"></tbody>
+    </table>
+  </section>
+
+</main>
+
+<script>
+let ads = [];
+
+async function loadStats() {
+  const r = await fetch('/api/stats'); const s = await r.json();
+  document.getElementById('stat-total').innerText = s.total_ads;
+  document.getElementById('stat-stores').innerText = s.total_stores;
+  document.getElementById('db-backend').innerText = s.backend;
+}
+async function loadAds() {
+  const q = document.getElementById('search').value;
+  const r = await fetch('/api/ads?limit=200&search=' + encodeURIComponent(q));
+  const d = await r.json();
+  ads = d.ads; renderAds();
+}
+function renderAds() {
+  const el = document.getElementById('ads');
+  if (!ads.length) { el.innerHTML = '<div class="text-slate-500 text-sm">لا توجد نتائج بعد.</div>'; return; }
+  el.innerHTML = ads.map(a => `
+    <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-2">
+      <div class="flex justify-between items-start gap-2">
+        <div class="font-bold text-sm truncate">${a.page_name || '—'}</div>
+        ${a.is_active ? '<span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900 text-emerald-300">نشط</span>' : ''}
+      </div>
+      ${a.store_domain ? `<div class="text-xs text-emerald-400">🏪 ${a.store_domain} <span class="text-slate-500">(${a.platform||''})</span></div>` : '<div class="text-xs text-slate-500">بدون رابط متجر</div>'}
+      <div class="text-xs text-slate-400 line-clamp-3 h-10 overflow-hidden">${(a.body||'').slice(0,140)}</div>
+      <div class="flex justify-between text-[11px] text-slate-500">
+        <span>ID: ${a.ad_id}</span>
+        ${a.link_url ? `<a href="${a.link_url}" target="_blank" class="text-sky-400 hover:underline truncate max-w-[120px]">الرابط ↗</a>` : ''}
+      </div>
+    </div>`).join('');
+}
+async function loadStores() {
+  const r = await fetch('/api/stores'); const d = await r.json();
+  document.getElementById('stores').innerHTML = d.stores.map(s => `
+    <tr class="border-b border-slate-800/50">
+      <td class="py-2 text-emerald-400">${s.store_domain}</td>
+      <td class="text-slate-400">${s.platform||''}</td>
+      <td class="num">${s.total_ads}</td>
+    </tr>`).join('') || '<tr><td class="text-slate-500 py-2" colspan="3">لا متاجر بعد.</td></tr>';
+}
+function showTab(t) {
+  document.getElementById('view-ads').classList.toggle('hidden', t!=='ads');
+  document.getElementById('view-stores').classList.toggle('hidden', t!=='stores');
+  document.getElementById('tab-ads').className = 'px-4 py-2 rounded-lg text-sm ' + (t==='ads'?'bg-emerald-600 font-bold':'bg-slate-800');
+  document.getElementById('tab-stores').className = 'px-4 py-2 rounded-lg text-sm ' + (t==='stores'?'bg-emerald-600 font-bold':'bg-slate-800');
+  if (t==='stores') loadStores();
+}
+async function startEngine() {
+  const q = document.getElementById('q').value.trim();
+  if (!q) return alert('اكتب كلمة مفتاحية');
+  await fetch('/api/start', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ query:q, country:document.getElementById('country').value,
+      exact:document.getElementById('exact').checked,
+      stores_only:document.getElementById('stores_only').checked,
+      sort:document.getElementById('sort').value })});
+}
+async function stopEngine(){ await fetch('/api/stop',{method:'POST'}); }
+async function resetAll(){ if(!confirm('مسح كل الإعلانات؟'))return; await fetch('/api/reset',{method:'POST'}); loadStats(); loadAds(); }
+function exportData(f){ window.location = '/api/export/' + f; }
+
+let logLines = [];
+const es = new EventSource('/api/stream');
+es.onmessage = (e) => {
+  const m = JSON.parse(e.data); const d = m.data || {};
+  if (m.type === 'log') { logLines.push(d.text); logLines = logLines.slice(-200);
+    const el = document.getElementById('log'); el.innerText = logLines.join('\n'); el.scrollTop = el.scrollHeight; }
+  else if (m.type === 'ad') { if(document.getElementById('view-ads')){ ads.unshift(d); if(ads.length>200)ads.pop(); renderAds(); } }
+  else if (m.type === 'started') { setState(true); }
+  else if (m.type === 'finished') { document.getElementById('kpi-reported').innerText = d.reported ?? '-'; loadStats(); loadStores(); }
+  else if (m.type === 'done') { setState(false); loadAds(); }
+  else if (m.type === 'error') { logLines.push('❌ ' + d.message); document.getElementById('log').innerText = logLines.join('\n'); setState(false); }
+};
+function setState(run) {
+  document.getElementById('engine-state').innerText = run ? 'يعمل…' : 'متوقف';
+  document.getElementById('engine-state').className = 'text-xs px-2 py-0.5 rounded ' + (run ? 'bg-emerald-900 text-emerald-300' : 'bg-slate-800 text-slate-400');
+  document.getElementById('btn-start').disabled = run;
+  document.getElementById('btn-start').className = 'md:col-span-3 rounded-lg px-4 py-2 font-bold text-sm ' + (run ? 'bg-slate-700 text-slate-400' : 'bg-emerald-600 hover:bg-emerald-500');
+}
+// live status poll
+setInterval(async () => {
+  const r = await fetch('/api/status'); const s = await r.json();
+  document.getElementById('kpi-scraped').innerText = s.scraped || 0;
+  document.getElementById('kpi-stores').innerText = s.stores || 0;
+  document.getElementById('kpi-stored').innerText = s.stored || 0;
+  if (s.reported) document.getElementById('kpi-reported').innerText = s.reported;
+  setState(s.running);
+}, 2500);
+
+loadStats(); loadAds();
+</script>
+</body>
+</html>

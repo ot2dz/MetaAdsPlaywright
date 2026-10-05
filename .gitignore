@@ -1,0 +1,25 @@
+# Dependencies
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Env & secrets
+.env
+
+# Local data
+*.sqlite
+*.sqlite3
+*.db
+proxies.txt
+
+# Output
+*.csv
+*.jsonl
+*.json
+output/
+graphql_capture/
+
+# OS
+.DS_Store
