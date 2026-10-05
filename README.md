@@ -63,11 +63,27 @@ Copy `.env.example` to `.env` (optional):
 
 | Variable | Purpose |
 | --- | --- |
+| `DATABASE_URL` | PostgreSQL URL (falls back to local SQLite if unset) |
+| `INGEST_TOKEN` | Server secret that authorises `POST /api/ingest` |
 | `META_SCRAPER_PROXIES` | Comma-separated proxies, rotated round-robin |
 | `META_RATE_PER_SEC` | Optional proactive throttle (off by default) |
 | `META_RATE_BURST` | Burst capacity when the throttle is enabled |
 
 Proxies can also be listed one-per-line in `proxies.txt`.
+
+## Push to a central dashboard
+
+Run the scraper on one machine (e.g. Windows) and push its results to a central
+dashboard (e.g. Coolify) so you can analyse/export/track from anywhere.
+
+1. On the **dashboard** set `INGEST_TOKEN`.
+2. On the **scraper machine**, after a scrape:
+
+```bash
+python push_to_cloud.py --url https://ads.botdz.com --token <INGEST_TOKEN> --since-hours 24
+```
+
+The dashboard stores everything in PostgreSQL and serves the UI + API.
 
 ## Notes
 
