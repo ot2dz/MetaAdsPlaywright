@@ -30,6 +30,11 @@ app = Flask(__name__)
 FIXED_COUNTRY = "DZ"
 FIXED_LANGS = ["ar"]
 
+# Local scraping needs a Chromium browser. On a lightweight dashboard host
+# (e.g. Coolify without Chromium) set SCRAPE_ENABLED=false so the UI becomes
+# display/ingest-only and never tries to launch a browser.
+SCRAPE_ENABLED = os.environ.get("SCRAPE_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
+
 
 class ScrapeManager:
     def __init__(self):
@@ -121,6 +126,8 @@ def index():
 # ── engine control ────────────────────────────────────────────────────────
 @app.route("/api/start", methods=["POST"])
 def api_start():
+    if not SCRAPE_ENABLED:
+        return jsonify({"error": "scraping is disabled on this host (display/ingest only)"}), 409
     cfg = request.get_json(force=True, silent=True) or {}
     query = (cfg.get("query") or "").strip()
     if not query:
@@ -142,7 +149,7 @@ def api_stop():
 
 @app.route("/api/status")
 def api_status():
-    return jsonify({**manager.state, "db": db.get_stats()})
+    return jsonify({**manager.state, "scrape_enabled": SCRAPE_ENABLED, "db": db.get_stats()})
 
 
 @app.route("/api/stream")

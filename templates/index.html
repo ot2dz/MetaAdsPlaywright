@@ -31,9 +31,12 @@
 <main class="max-w-7xl mx-auto px-4 py-6 space-y-6">
 
   <!-- Engine -->
-  <section class="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
+  <section id="engine-section" class="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
     <h2 class="font-bold text-slate-300">⚙️ محرك السحب (Playwright + Stealth)</h2>
-    <div class="grid md:grid-cols-12 gap-3">
+    <div id="engine-disabled" class="hidden text-sm bg-amber-950/40 border border-amber-800 text-amber-300 rounded-lg p-3">
+      السحب مُعطَّل على هذا السيرفر (للعرض والاستقبال فقط). يتم السحب من جهاز Windows ثم يُدفع تلقائياً إلى هنا.
+    </div>
+    <div id="engine-controls" class="grid md:grid-cols-12 gap-3">
       <input id="q" placeholder="الكلمة المفتاحية أو العبارة…" class="md:col-span-6 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
       <select id="sort" class="md:col-span-3 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
         <option value="total_impressions">الأكثر ظهوراً</option>
@@ -41,7 +44,7 @@
       </select>
       <button id="btn-start" onclick="startEngine()" class="md:col-span-3 bg-emerald-600 hover:bg-emerald-500 rounded-lg px-4 py-2 font-bold text-sm">▶ بدء السحب</button>
     </div>
-    <div class="flex items-center gap-5 text-sm flex-wrap">
+    <div id="engine-options" class="flex items-center gap-5 text-sm flex-wrap">
       <label class="flex items-center gap-2"><input type="checkbox" id="exact"> عبارة حرفية</label>
       <label class="flex items-center gap-2"><input type="checkbox" id="stores_only" checked> المتاجر فقط</label>
       <span class="text-xs px-2 py-1 rounded bg-sky-950 text-sky-300 border border-sky-900">🇩🇿 الجزائر فقط</span>
@@ -182,6 +185,7 @@ async function startEngine() {
       stores_only:document.getElementById('stores_only').checked,
       sort:document.getElementById('sort').value })});
   const d = await r.json();
+  if (r.status === 409) { alert('السحب مُعطَّل على هذا السيرفر (للعرض فقط).'); return; }
   if (!d.ok) logLines.push('⚠️ السحب يعمل حالياً — انتظر انتهاءه.');
 }
 async function stopEngine(){ await fetch('/api/stop',{method:'POST'}); }
@@ -212,12 +216,20 @@ function setState(run) {
   document.getElementById('btn-start').className = 'md:col-span-3 rounded-lg px-4 py-2 font-bold text-sm ' + (run ? 'bg-slate-700 text-slate-400' : 'bg-emerald-600 hover:bg-emerald-500');
 }
 // live status poll
+let scrapeEnabled = true;
+function applyScrapeEnabled(enabled) {
+  scrapeEnabled = enabled;
+  document.getElementById('engine-controls').classList.toggle('hidden', !enabled);
+  document.getElementById('engine-options').classList.toggle('hidden', !enabled);
+  document.getElementById('engine-disabled').classList.toggle('hidden', enabled);
+}
 setInterval(async () => {
   const r = await fetch('/api/status'); const s = await r.json();
   document.getElementById('kpi-scraped').innerText = s.scraped || 0;
   document.getElementById('kpi-stores').innerText = s.stores || 0;
   document.getElementById('kpi-stored').innerText = s.stored || 0;
   if (s.reported) document.getElementById('kpi-reported').innerText = s.reported;
+  if (s.scrape_enabled !== undefined) applyScrapeEnabled(s.scrape_enabled);
   setState(s.running);
 }, 2500);
 
