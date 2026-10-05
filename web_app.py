@@ -11,6 +11,7 @@ import csv
 import io
 import json
 import logging
+import os
 import queue
 import threading
 from datetime import datetime, timezone
@@ -194,6 +195,33 @@ def api_reset():
     return jsonify({"ok": True})
 
 
+def _ingest_token() -> str:
+    return os.environ.get("INGEST_TOKEN", "").strip()
+
+
+@app.route("/api/ingest", methods=["POST"])
+def api_ingest():
+    """Receive ads pushed from a remote scraper (e.g. the Windows machine)."""
+    expected = _ingest_token()
+    provided = (request.headers.get("X-Ingest-Token", "")
+                or request.headers.get("Authorization", "").replace("Bearer ", "")).strip()
+    if not expected:
+        return jsonify({"error": "ingest disabled (INGEST_TOKEN not set)"}), 503
+    if provided != expected:
+        return jsonify({"error": "unauthorized"}), 401
+
+    payload = request.get_json(force=True, silent=True) or {}
+    ads = payload.get("ads") or []
+    query = payload.get("query", "")
+    country = payload.get("country", FIXED_COUNTRY)
+    stored = 0
+    for ad in ads:
+        if isinstance(ad, dict) and db.save_ad(ad, query=query, country=country):
+            stored += 1
+    logger.info("ingest: received=%s stored=%s query=%r", len(ads), stored, query)
+    return jsonify({"ok": True, "received": len(ads), "stored": stored})
+
+
 @app.route("/api/export/<fmt>")
 def api_export(fmt: str):
     ads = db.get_ads(limit=100000, stores_only=False)
@@ -220,4 +248,4 @@ if __name__ == "__main__":
     print("  MetaAdsPlaywright dashboard -> http://127.0.0.1:5002")
     print(f"  DB backend: {'PostgreSQL' if db.is_postgres else 'SQLite'}")
     print("=" * 60)
-    app.run(host="127.0.0.1", port=5002, debug=False)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5002")), debug=False)
