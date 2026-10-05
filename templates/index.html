@@ -34,8 +34,7 @@
   <section class="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
     <h2 class="font-bold text-slate-300">⚙️ محرك السحب (Playwright + Stealth)</h2>
     <div class="grid md:grid-cols-12 gap-3">
-      <input id="q" placeholder="الكلمة المفتاحية أو العبارة…" class="md:col-span-5 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
-      <input id="country" value="DZ" class="md:col-span-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+      <input id="q" placeholder="الكلمة المفتاحية أو العبارة…" class="md:col-span-6 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
       <select id="sort" class="md:col-span-3 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
         <option value="total_impressions">الأكثر ظهوراً</option>
         <option value="relevancy_monthly_grouped">الصلة الشهرية</option>
@@ -45,6 +44,8 @@
     <div class="flex items-center gap-5 text-sm flex-wrap">
       <label class="flex items-center gap-2"><input type="checkbox" id="exact"> عبارة حرفية</label>
       <label class="flex items-center gap-2"><input type="checkbox" id="stores_only" checked> المتاجر فقط</label>
+      <span class="text-xs px-2 py-1 rounded bg-sky-950 text-sky-300 border border-sky-900">🇩🇿 الجزائر فقط</span>
+      <span class="text-xs px-2 py-1 rounded bg-violet-950 text-violet-300 border border-violet-900">🗣️ اللغة العربية فقط</span>
       <button onclick="stopEngine()" class="ms-auto text-rose-400 hover:underline text-xs">⏹ إيقاف</button>
       <span id="engine-state" class="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-400">متوقف</span>
     </div>
@@ -71,6 +72,7 @@
   <!-- Tabs -->
   <div class="flex gap-2">
     <button onclick="showTab('ads')" id="tab-ads" class="px-4 py-2 rounded-lg bg-emerald-600 text-sm font-bold">الإعلانات</button>
+    <button onclick="showTab('queries')" id="tab-queries" class="px-4 py-2 rounded-lg bg-slate-800 text-sm">الكلمات المفتاحية</button>
     <button onclick="showTab('stores')" id="tab-stores" class="px-4 py-2 rounded-lg bg-slate-800 text-sm">المتاجر</button>
     <div class="ms-auto flex gap-2">
       <button onclick="exportData('csv')" class="text-xs bg-slate-800 hover:bg-slate-700 rounded px-3 py-1">CSV</button>
@@ -79,8 +81,18 @@
   </div>
 
   <section id="view-ads" class="space-y-3">
+    <div id="qfilter" class="hidden text-xs text-slate-400">🔍 مفلتر بكلمة: <b id="qfilter-name" class="text-emerald-400"></b> <button onclick="clearQFilter()" class="text-rose-400 hover:underline">✕ إزالة</button></div>
     <input id="search" oninput="loadAds()" placeholder="بحث داخل النتائج…" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+    <div class="text-xs text-slate-500"><b class="num" id="ads-total">0</b> إعلان معروض</div>
     <div id="ads" class="grid md:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+  </section>
+
+  <section id="view-queries" class="hidden overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="text-slate-400 text-xs"><tr class="border-b border-slate-800">
+        <th class="text-right py-2">الكلمة المفتاحية</th><th class="text-right">عدد الإعلانات</th><th class="text-right">إعلانات متاجر</th><th class="text-right">آخر سحب</th><th></th></tr></thead>
+      <tbody id="queries"></tbody>
+    </table>
   </section>
 
   <section id="view-stores" class="hidden overflow-x-auto">
@@ -95,6 +107,7 @@
 
 <script>
 let ads = [];
+let queryFilter = '';
 
 async function loadStats() {
   const r = await fetch('/api/stats'); const s = await r.json();
@@ -104,10 +117,26 @@ async function loadStats() {
 }
 async function loadAds() {
   const q = document.getElementById('search').value;
-  const r = await fetch('/api/ads?limit=200&search=' + encodeURIComponent(q));
+  const r = await fetch('/api/ads?limit=200&search=' + encodeURIComponent(q) + '&query=' + encodeURIComponent(queryFilter));
   const d = await r.json();
   ads = d.ads; renderAds();
+  document.getElementById('ads-total').innerText = d.total;
+  document.getElementById('qfilter').classList.toggle('hidden', !queryFilter);
+  document.getElementById('qfilter-name').innerText = queryFilter;
 }
+function clearQFilter(){ queryFilter=''; loadAds(); }
+async function loadQueries() {
+  const r = await fetch('/api/queries'); const d = await r.json();
+  document.getElementById('queries').innerHTML = d.queries.map(qx => `
+    <tr class="border-b border-slate-800/50">
+      <td class="py-2 font-bold text-slate-200">${qx.query}</td>
+      <td class="num text-emerald-400">${qx.total_ads}</td>
+      <td class="num text-slate-400">${qx.store_ads}</td>
+      <td class="text-xs text-slate-500">${(qx.last_run||'').slice(0,16).replace('T',' ')}</td>
+      <td><button onclick="filterByQuery('${qx.query.replace(/'/g,"\\'")}')" class="text-xs text-sky-400 hover:underline">عرض إعلاناتها</button></td>
+    </tr>`).join('') || '<tr><td colspan="5" class="text-slate-500 py-2">لا كلمات بعد — ابدأ أول سحب.</td></tr>';
+}
+function filterByQuery(q){ queryFilter=q; showTab('ads'); loadAds(); }
 function renderAds() {
   const el = document.getElementById('ads');
   if (!ads.length) { el.innerHTML = '<div class="text-slate-500 text-sm">لا توجد نتائج بعد.</div>'; return; }
@@ -134,21 +163,26 @@ async function loadStores() {
       <td class="num">${s.total_ads}</td>
     </tr>`).join('') || '<tr><td class="text-slate-500 py-2" colspan="3">لا متاجر بعد.</td></tr>';
 }
+let activeTab = 'ads';
 function showTab(t) {
-  document.getElementById('view-ads').classList.toggle('hidden', t!=='ads');
-  document.getElementById('view-stores').classList.toggle('hidden', t!=='stores');
+  activeTab = t;
+  ['ads','queries','stores'].forEach(v => document.getElementById('view-'+v).classList.toggle('hidden', t!==v));
   document.getElementById('tab-ads').className = 'px-4 py-2 rounded-lg text-sm ' + (t==='ads'?'bg-emerald-600 font-bold':'bg-slate-800');
+  document.getElementById('tab-queries').className = 'px-4 py-2 rounded-lg text-sm ' + (t==='queries'?'bg-emerald-600 font-bold':'bg-slate-800');
   document.getElementById('tab-stores').className = 'px-4 py-2 rounded-lg text-sm ' + (t==='stores'?'bg-emerald-600 font-bold':'bg-slate-800');
   if (t==='stores') loadStores();
+  if (t==='queries') loadQueries();
 }
 async function startEngine() {
   const q = document.getElementById('q').value.trim();
   if (!q) return alert('اكتب كلمة مفتاحية');
-  await fetch('/api/start', { method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ query:q, country:document.getElementById('country').value,
+  const r = await fetch('/api/start', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ query:q,
       exact:document.getElementById('exact').checked,
       stores_only:document.getElementById('stores_only').checked,
       sort:document.getElementById('sort').value })});
+  const d = await r.json();
+  if (!d.ok) logLines.push('⚠️ السحب يعمل حالياً — انتظر انتهاءه.');
 }
 async function stopEngine(){ await fetch('/api/stop',{method:'POST'}); }
 async function resetAll(){ if(!confirm('مسح كل الإعلانات؟'))return; await fetch('/api/reset',{method:'POST'}); loadStats(); loadAds(); }
@@ -160,9 +194,14 @@ es.onmessage = (e) => {
   const m = JSON.parse(e.data); const d = m.data || {};
   if (m.type === 'log') { logLines.push(d.text); logLines = logLines.slice(-200);
     const el = document.getElementById('log'); el.innerText = logLines.join('\n'); el.scrollTop = el.scrollHeight; }
-  else if (m.type === 'ad') { if(document.getElementById('view-ads')){ ads.unshift(d); if(ads.length>200)ads.pop(); renderAds(); } }
+  else if (m.type === 'ad') { if (activeTab==='ads' && !queryFilter) { ads.unshift(d); if(ads.length>200)ads.pop(); renderAds(); } }
   else if (m.type === 'started') { setState(true); }
-  else if (m.type === 'finished') { document.getElementById('kpi-reported').innerText = d.reported ?? '-'; loadStats(); loadStores(); }
+  else if (m.type === 'finished') {
+    document.getElementById('kpi-reported').innerText = d.reported ?? '-';
+    logLines.push(`✅ انتهى السحب: وُجد ${d.scraped} إعلانًا للكلمة "${d.query}" (${d.stores} متجرًا فريدًا).`);
+    const el = document.getElementById('log'); el.innerText = logLines.join('\n'); el.scrollTop = el.scrollHeight;
+    loadStats(); loadStores(); loadQueries();
+  }
   else if (m.type === 'done') { setState(false); loadAds(); }
   else if (m.type === 'error') { logLines.push('❌ ' + d.message); document.getElementById('log').innerText = logLines.join('\n'); setState(false); }
 };

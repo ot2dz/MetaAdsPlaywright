@@ -164,12 +164,15 @@ class Database:
             conn.close()
 
     def get_ads(self, limit: int = 100, offset: int = 0, search: str = "",
-                stores_only: bool = False) -> list[dict]:
+                stores_only: bool = False, query: str = "") -> list[dict]:
         p = self._ph()
         where = []
         params: list = []
         if stores_only:
             where.append("store_domain != '' AND store_domain IS NOT NULL")
+        if query:
+            where.append(f"query = {p}")
+            params.append(query)
         if search:
             like = "%" + search + "%"
             where.append(f"(body LIKE {p} OR page_name LIKE {p} OR store_domain LIKE {p})")
@@ -185,12 +188,16 @@ class Database:
                 r["publisher_platforms"] = []
         return rows
 
-    def count_ads(self, search: str = "", stores_only: bool = False) -> int:
+    def count_ads(self, search: str = "", stores_only: bool = False,
+                  query: str = "") -> int:
         p = self._ph()
         where = []
         params: list = []
         if stores_only:
             where.append("store_domain != '' AND store_domain IS NOT NULL")
+        if query:
+            where.append(f"query = {p}")
+            params.append(query)
         if search:
             like = "%" + search + "%"
             where.append(f"(body LIKE {p} OR page_name LIKE {p} OR store_domain LIKE {p})")
@@ -198,6 +205,13 @@ class Database:
         clause = ("WHERE " + " AND ".join(where)) if where else ""
         row = self._query_one(f"SELECT COUNT(*) AS c FROM meta_ads {clause}", tuple(params))
         return int(row["c"]) if row else 0
+
+    def get_queries(self) -> list[dict]:
+        sql = ("SELECT query, COUNT(*) AS total_ads, "
+               "SUM(CASE WHEN store_domain != '' AND store_domain IS NOT NULL THEN 1 ELSE 0 END) AS store_ads, "
+               "MAX(collected_at) AS last_run FROM meta_ads "
+               "WHERE query != '' GROUP BY query ORDER BY last_run DESC LIMIT 100")
+        return self._query(sql)
 
     def get_stores(self, search: str = "") -> list[dict]:
         p = self._ph()

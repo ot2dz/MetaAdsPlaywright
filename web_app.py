@@ -25,6 +25,10 @@ logger = logging.getLogger("web_app")
 
 app = Flask(__name__)
 
+# Targeting policy for this deployment: Arabic-only ads running in Algeria.
+FIXED_COUNTRY = "DZ"
+FIXED_LANGS = ["ar"]
+
 
 class ScrapeManager:
     def __init__(self):
@@ -37,7 +41,7 @@ class ScrapeManager:
     def _emit(self, kind: str, data: dict) -> None:
         self.events.put({"type": kind, "data": data})
 
-    def start(self, query: str, country: str, exact: bool, stores_only: bool,
+    def start(self, query: str, exact: bool, stores_only: bool,
               sort_mode: str) -> bool:
         if self.state["running"]:
             return False
@@ -47,7 +51,7 @@ class ScrapeManager:
         self.state.update({"running": True, "query": query, "scraped": 0,
                            "stored": 0, "stores": 0, "reported": None, "log": []})
         self.thread = threading.Thread(
-            target=self._run, args=(query, country, exact, stores_only, sort_mode),
+            target=self._run, args=(query, exact, stores_only, sort_mode),
             daemon=True)
         self.thread.start()
         return True
@@ -55,7 +59,9 @@ class ScrapeManager:
     def stop(self) -> None:
         self.stop_event.set()
 
-    def _run(self, query, country, exact, stores_only, sort_mode) -> None:
+    def _run(self, query, exact, stores_only, sort_mode) -> None:
+        country = FIXED_COUNTRY
+        languages = FIXED_LANGS
         seen_stores: set = set()
 
         def progress(msg):
@@ -79,12 +85,15 @@ class ScrapeManager:
         try:
             self._emit("started", {"query": query, "country": country})
             result = scrape(query, country=country, exact_phrase=exact,
-                            sort_mode=sort_mode, stores_only=stores_only,
+                            sort_mode=sort_mode, languages=languages,
+                            stores_only=stores_only,
                             progress=progress, on_ad=on_ad)
             self.state["reported"] = result.reported_count
             self.state["stores"] = result.unique_stores
             self._emit("finished", {
+                "query": query,
                 "scraped": result.total_ads,
+                "store_ads": result.store_ads,
                 "stored": self.state["stored"],
                 "stores": result.unique_stores,
                 "reported": result.reported_count,
@@ -117,7 +126,6 @@ def api_start():
         return jsonify({"error": "query required"}), 400
     ok = manager.start(
         query=query,
-        country=cfg.get("country", "DZ"),
         exact=bool(cfg.get("exact", False)),
         stores_only=bool(cfg.get("stores_only", False)),
         sort_mode=cfg.get("sort", "total_impressions"),
@@ -158,9 +166,16 @@ def api_ads():
     limit = int(request.args.get("limit", 60))
     offset = int(request.args.get("offset", 0))
     search = request.args.get("search", "")
+    query = request.args.get("query", "")
     stores_only = request.args.get("stores_only", "0") == "1"
-    ads = db.get_ads(limit=limit, offset=offset, search=search, stores_only=stores_only)
-    return jsonify({"ads": ads, "total": db.count_ads(search=search, stores_only=stores_only)})
+    ads = db.get_ads(limit=limit, offset=offset, search=search,
+                     stores_only=stores_only, query=query)
+    return jsonify({"ads": ads, "total": db.count_ads(search=search, stores_only=stores_only, query=query)})
+
+
+@app.route("/api/queries")
+def api_queries():
+    return jsonify({"queries": db.get_queries()})
 
 
 @app.route("/api/stores")
@@ -205,4 +220,4 @@ if __name__ == "__main__":
     print("  MetaAdsPlaywright dashboard -> http://127.0.0.1:5002")
     print(f"  DB backend: {'PostgreSQL' if db.is_postgres else 'SQLite'}")
     print("=" * 60)
-    app.run(host="0.0.0.0", port=5002, debug=False)
+    app.run(host="127.0.0.1", port=5002, debug=False)

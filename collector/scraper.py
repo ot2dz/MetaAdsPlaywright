@@ -59,14 +59,17 @@ class ScrapeResult:
 
 
 def build_url(query: str, country: str = "DZ", exact_phrase: bool = False,
-              sort_mode: str = "total_impressions") -> str:
+              sort_mode: str = "total_impressions",
+              languages: Optional[list[str]] = None) -> str:
     q = f'"{query}"' if exact_phrase else query
     search_type = "keyword_exact_phrase" if exact_phrase else "keyword_unordered"
+    langs = f"&langs={quote(json.dumps(list(languages)))}" if languages else ""
     return (
         f"{ADS_LIBRARY_URL}?active_status=active&ad_type=all&country={country}"
         f"&is_targeted_country=false&media_type=all&q={quote(q)}"
         f"&search_type={search_type}"
         f"&sort_data[direction]=desc&sort_data[mode]={sort_mode}"
+        f"{langs}"
     )
 
 
@@ -104,32 +107,64 @@ def _find_connection(body: str):
     return None
 
 
+def _build_ad(col: dict) -> Ad:
+    snap = col.get("snapshot") or {}
+    link = col.get("link_url") or snap.get("link_url") or ""
+    domain, platform = extract_store_domain(link)
+    body_obj = snap.get("body") or {}
+    body_text = body_obj.get("text", "") if isinstance(body_obj, dict) else str(body_obj)
+    start = col.get("start_date")
+    return Ad(
+        ad_id=str(col.get("ad_archive_id") or ""),
+        page_name=col.get("page_name") or snap.get("page_name") or "",
+        page_id=str(col.get("page_id") or ""),
+        start_date=str(start) if start else "",
+        is_active=bool(col.get("is_active")),
+        link_url=link,
+        store_domain=domain or "",
+        platform=platform or "",
+        body=body_text,
+        cta_text=snap.get("cta_text") or "",
+        collation_count=int(col.get("collation_count") or 1),
+        publisher_platforms=col.get("publisher_platforms") or [],
+        snapshot=snap,
+    )
+
+
+def _collect_ad_nodes(obj, depth: int = 0, out: Optional[list] = None) -> list:
+    """Walk the whole parsed tree and collect every dict carrying ad_archive_id.
+
+    Meta wraps search results in different envelopes (data.ad_library_main in
+    GraphQL responses, __bbox module dumps in the SSR HTML). Keying off the
+    ad_archive_id marker instead of a fixed path survives both — and any future
+    rename of the surrounding structure.
+    """
+    if out is None:
+        out = []
+    if depth > 20 or obj is None:
+        return out
+    if isinstance(obj, dict):
+        if "ad_archive_id" in obj:
+            out.append(obj)
+            return out
+        for v in obj.values():
+            _collect_ad_nodes(v, depth + 1, out)
+    elif isinstance(obj, list):
+        for n in obj:
+            _collect_ad_nodes(n, depth + 1, out)
+    return out
+
+
+def _iter_ads_from_json(json_obj) -> list[Ad]:
+    return [_build_ad(n) for n in _collect_ad_nodes(json_obj)]
+
+
 def _parse_ads_from_connection(conn: dict) -> list[Ad]:
     out: list[Ad] = []
     for edge in conn.get("edges") or []:
         node = edge.get("node", {}) if isinstance(edge, dict) else {}
         for col in (node.get("collated_results") or []):
-            snap = col.get("snapshot") or {}
-            link = col.get("link_url") or snap.get("link_url") or ""
-            domain, platform = extract_store_domain(link)
-            body_obj = snap.get("body") or {}
-            body_text = body_obj.get("text", "") if isinstance(body_obj, dict) else str(body_obj)
-            start = col.get("start_date")
-            out.append(Ad(
-                ad_id=str(col.get("ad_archive_id") or ""),
-                page_name=col.get("page_name") or snap.get("page_name") or "",
-                page_id=str(col.get("page_id") or ""),
-                start_date=str(start) if start else "",
-                is_active=bool(col.get("is_active")),
-                link_url=link,
-                store_domain=domain or "",
-                platform=platform or "",
-                body=body_text,
-                cta_text=snap.get("cta_text") or "",
-                collation_count=int(col.get("collation_count") or 1),
-                publisher_platforms=col.get("publisher_platforms") or [],
-                snapshot=snap,
-            ))
+            out.append(_build_ad(col))
     return out
 
 
@@ -143,18 +178,10 @@ def _iter_ads_from_html(html: str) -> list[Ad]:
         if "ad_archive_id" not in content:
             continue
         try:
-            json.loads(content)
+            out.extend(_iter_ads_from_json(json.loads(content)))
         except Exception:
-            continue
-        for obj in _iter_json_blocks(content):
-            data = obj.get("data") if isinstance(obj, dict) else None
-            if not isinstance(data, dict):
-                continue
-            alm = data.get("ad_library_main") or data.get("adLibraryMain")
-            if isinstance(alm, dict):
-                conn = alm.get("search_results_connection") or alm.get("searchResultsConnection")
-                if isinstance(conn, dict):
-                    out.extend(_parse_ads_from_connection(conn))
+            for obj in _iter_json_blocks(content):
+                out.extend(_iter_ads_from_json(obj))
     return out
 
 
@@ -165,8 +192,9 @@ def scrape(
     headless: bool = True,
     exact_phrase: bool = False,
     sort_mode: str = "total_impressions",
+    languages: Optional[list[str]] = None,
     max_scrolls: int = 800,
-    stable_rounds: int = 8,
+    stable_rounds: int = 12,
     scroll_pause_ms: int = 1500,
     stores_only: bool = False,
     progress: Optional[Callable[[str], None]] = None,
@@ -175,7 +203,8 @@ def scrape(
     """Scrape every ad Facebook loads for `query` using a real browser."""
     log = progress or (lambda msg: None)
 
-    url = build_url(query, country=country, exact_phrase=exact_phrase, sort_mode=sort_mode)
+    url = build_url(query, country=country, exact_phrase=exact_phrase,
+                    sort_mode=sort_mode, languages=languages)
 
     ads: dict[str, Ad] = {}
     payloads = 0
@@ -183,12 +212,8 @@ def scrape(
     blocked = {"flag": False}
     raw_html = {"text": ""}
 
-    def _ingest_conn(conn: dict) -> None:
-        nonlocal reported
-        c = conn.get("count")
-        if isinstance(c, int):
-            reported = c if reported is None else max(reported, c)
-        for ad in _parse_ads_from_connection(conn):
+    def _ingest_ads(new_ads: list[Ad]) -> None:
+        for ad in new_ads:
             if ad.ad_id and ad.ad_id not in ads:
                 ads[ad.ad_id] = ad
                 if on_ad:
@@ -196,6 +221,18 @@ def scrape(
                         on_ad(ad)
                     except Exception:
                         pass
+
+    def _ingest_body(body: str) -> None:
+        """Ingest any GraphQL response body: count via the known path, ads via
+        a structural deep-walk so renamed wrappers don't hide results."""
+        nonlocal reported
+        conn = _find_connection(body)
+        if conn:
+            c = conn.get("count")
+            if isinstance(c, int):
+                reported = c if reported is None else max(reported, c)
+        for obj in _iter_json_blocks(body):
+            _ingest_ads(_iter_ads_from_json(obj))
 
     def on_response(resp):
         nonlocal payloads
@@ -212,17 +249,16 @@ def scrape(
                 body = safe_body(resp)
                 if not body:
                     return
-                if "search_results_connection" in body:
+                if "search_results_connection" in body or "ad_archive_id" in body:
                     payloads += 1
                     report_ok()
-                    conn = _find_connection(body)
-                    if conn:
-                        _ingest_conn(conn)
+                    _ingest_body(body)
                 return
-            # Page HTML: capture the SSR-embedded ads once.
-            if not raw_html["text"]:
+            # Page HTML: keep the biggest ads/library document that carries data,
+            # in case an early redirect/chrome response also mentions ad_archive_id.
+            if is_page:
                 body = safe_body(resp)
-                if body and "ad_archive_id" in body:
+                if body and "ad_archive_id" in body and len(body) > len(raw_html["text"]):
                     raw_html["text"] = body
                     report_ok()
         except Exception:
@@ -240,10 +276,19 @@ def scrape(
 
         # 1) Pull the initial batch straight out of the SSR HTML.
         if raw_html["text"]:
-            for ad in _iter_ads_from_html(raw_html["text"]):
-                if ad.ad_id and ad.ad_id not in ads:
-                    ads[ad.ad_id] = ad
+            _ingest_ads(_iter_ads_from_html(raw_html["text"]))
             log(f"SSR HTML batch: {len(ads)} ads")
+
+        # Meta's on-page "N results" label is the best reference count when the
+        # connection payload doesn't carry one.
+        if reported is None:
+            try:
+                m = re.search(r"([\d.,]+)\s*(?:results|نتيجة|نتائج)",
+                              page.evaluate("document.body.innerText || ''"))
+                if m:
+                    reported = int(m.group(1).replace(",", "").replace(".", ""))
+            except Exception:
+                pass
 
         # 2) Nudge the page so Facebook fires the first search GraphQL call.
         for _ in range(10):
