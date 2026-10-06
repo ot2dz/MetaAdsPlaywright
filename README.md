@@ -71,7 +71,30 @@ Copy `.env.example` to `.env` (optional):
 
 Proxies can also be listed one-per-line in `proxies.txt`.
 
-## Push to a central dashboard
+## Remote control (dashboard + worker)
+
+Run the **dashboard** on a lightweight host (Coolify, no Chromium) and a
+**worker** on the machine that has a browser (Windows). You control scraping
+from the dashboard; the worker executes it.
+
+```
+You (dashboard) --queue job--> Coolify DB <--poll-- Windows worker --scrape-->
+                                            <--post results-- dashboard
+```
+
+### Dashboard host (Coolify)
+Set `SCRAPE_ENABLED=false` and `INGEST_TOKEN`. The "بدء السحب" button then
+queues a job instead of launching a browser. You can also manage tracked
+keywords and the schedule (every N hours) from the UI.
+
+### Worker machine (Windows)
+```bash
+python worker.py --url https://ads.botdz.com --token <INGEST_TOKEN> --poll 10
+```
+It polls every `--poll` seconds, runs any queued scrape with Playwright, and
+posts the ads back. Keep it running (Task Scheduler / a console window).
+
+## Push to a central dashboard (one-shot)
 
 Run the scraper on one machine (e.g. Windows) and push its results to a central
 dashboard (e.g. Coolify) so you can analyse/export/track from anywhere.

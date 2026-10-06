@@ -30,13 +30,13 @@
 
 <main class="max-w-7xl mx-auto px-4 py-6 space-y-6">
 
-  <!-- Engine -->
+  <!-- Engine / command -->
   <section id="engine-section" class="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
-    <h2 class="font-bold text-slate-300">⚙️ محرك السحب (Playwright + Stealth)</h2>
-    <div id="engine-disabled" class="hidden text-sm bg-amber-950/40 border border-amber-800 text-amber-300 rounded-lg p-3">
-      السحب مُعطَّل على هذا السيرفر (للعرض والاستقبال فقط). يتم السحب من جهاز Windows ثم يُدفع تلقائياً إلى هنا.
+    <h2 class="font-bold text-slate-300">⚙️ محرك السحب</h2>
+    <div id="engine-note" class="hidden text-sm bg-amber-950/40 border border-amber-800 text-amber-300 rounded-lg p-3">
+      السحب يُنفَّذ على جهاز Windows. الأمر الذي ترسله هنا يصل إليه تلقائياً ويبدأ السحب.
     </div>
-    <div id="engine-controls" class="grid md:grid-cols-12 gap-3">
+    <div class="grid md:grid-cols-12 gap-3">
       <input id="q" placeholder="الكلمة المفتاحية أو العبارة…" class="md:col-span-6 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
       <select id="sort" class="md:col-span-3 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
         <option value="total_impressions">الأكثر ظهوراً</option>
@@ -44,13 +44,42 @@
       </select>
       <button id="btn-start" onclick="startEngine()" class="md:col-span-3 bg-emerald-600 hover:bg-emerald-500 rounded-lg px-4 py-2 font-bold text-sm">▶ بدء السحب</button>
     </div>
-    <div id="engine-options" class="flex items-center gap-5 text-sm flex-wrap">
+    <div class="flex items-center gap-5 text-sm flex-wrap">
       <label class="flex items-center gap-2"><input type="checkbox" id="exact"> عبارة حرفية</label>
       <label class="flex items-center gap-2"><input type="checkbox" id="stores_only" checked> المتاجر فقط</label>
       <span class="text-xs px-2 py-1 rounded bg-sky-950 text-sky-300 border border-sky-900">🇩🇿 الجزائر فقط</span>
       <span class="text-xs px-2 py-1 rounded bg-violet-950 text-violet-300 border border-violet-900">🗣️ اللغة العربية فقط</span>
       <button onclick="stopEngine()" class="ms-auto text-rose-400 hover:underline text-xs">⏹ إيقاف</button>
       <span id="engine-state" class="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-400">متوقف</span>
+    </div>
+  </section>
+
+  <!-- Jobs + Schedule -->
+  <section class="grid lg:grid-cols-3 gap-4">
+    <div class="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-xl p-4">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="font-bold text-slate-300 text-sm">📋 أوامر السحب</h2>
+        <button onclick="loadJobs()" class="text-xs text-slate-400 hover:underline">تحديث</button>
+      </div>
+      <div id="jobs" class="space-y-2 max-h-72 overflow-auto"></div>
+    </div>
+    <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
+      <h2 class="font-bold text-slate-300 text-sm">⏰ الجدولة والكلمات</h2>
+      <label class="flex items-center gap-2 text-sm"><input type="checkbox" id="sched-enabled"> تفعيل السحب المجدول</label>
+      <div class="flex items-center gap-2 text-sm">
+        <span>كل</span>
+        <input id="sched-interval" type="number" min="1" value="24" class="w-16 bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm">
+        <span>ساعة</span>
+        <button onclick="saveSchedule()" class="ms-auto bg-slate-800 hover:bg-slate-700 rounded px-3 py-1 text-xs">حفظ</button>
+      </div>
+      <div class="border-t border-slate-800 pt-3 space-y-2">
+        <div class="text-xs text-slate-400">الكلمات المتتبَّعة (تُسحب تلقائياً)</div>
+        <div class="flex gap-2">
+          <input id="kw-input" placeholder="أضف كلمة…" class="flex-1 bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm">
+          <button onclick="addKeyword()" class="bg-emerald-700 hover:bg-emerald-600 rounded px-3 py-1 text-xs">+</button>
+        </div>
+        <div id="keywords" class="space-y-1 max-h-40 overflow-auto"></div>
+      </div>
     </div>
   </section>
 
@@ -185,12 +214,64 @@ async function startEngine() {
       stores_only:document.getElementById('stores_only').checked,
       sort:document.getElementById('sort').value })});
   const d = await r.json();
-  if (r.status === 409) { alert('السحب مُعطَّل على هذا السيرفر (للعرض فقط).'); return; }
+  if (d.queued) { alert('✅ تم إرسال أمر السحب — سيبدأ على جهاز Windows تلقائياً.'); loadJobs(); return; }
   if (!d.ok) logLines.push('⚠️ السحب يعمل حالياً — انتظر انتهاءه.');
 }
 async function stopEngine(){ await fetch('/api/stop',{method:'POST'}); }
 async function resetAll(){ if(!confirm('مسح كل الإعلانات؟'))return; await fetch('/api/reset',{method:'POST'}); loadStats(); loadAds(); }
 function exportData(f){ window.location = '/api/export/' + f; }
+
+// ── jobs ──
+const JOB_AR = { pending:'في الانتظار', running:'قيد التنفيذ', done:'انتهى', failed:'فشل' };
+async function loadJobs() {
+  const r = await fetch('/api/jobs'); const d = await r.json();
+  const el = document.getElementById('jobs');
+  if (!d.jobs.length) { el.innerHTML = '<div class="text-slate-500 text-sm">لا أوامر بعد.</div>'; return; }
+  const color = { pending:'text-slate-300 bg-slate-800', running:'text-sky-300 bg-sky-950', done:'text-emerald-300 bg-emerald-950', failed:'text-rose-300 bg-rose-950' };
+  el.innerHTML = d.jobs.map(j => `
+    <div class="flex items-center justify-between gap-2 bg-slate-800/50 rounded-lg px-3 py-2 text-sm">
+      <div class="truncate">
+        <span class="font-bold">${j.query}</span>
+        <span class="text-[11px] text-slate-500"> · ${j.source==='schedule'?'مجدول':'يدوي'}</span>
+      </div>
+      <div class="flex items-center gap-2 shrink-0">
+        ${j.status==='done'?`<span class="text-[11px] text-emerald-400 num">${j.result_count||0} إعلان</span>`:''}
+        <span class="text-[11px] px-2 py-0.5 rounded ${color[j.status]||'bg-slate-800'}">${JOB_AR[j.status]||j.status}</span>
+      </div>
+    </div>`).join('');
+}
+
+// ── schedule ──
+async function loadSettings() {
+  const r = await fetch('/api/settings'); const s = await r.json();
+  document.getElementById('sched-enabled').checked = s.schedule_enabled === 'true';
+  document.getElementById('sched-interval').value = s.interval_hours || 24;
+}
+async function saveSchedule() {
+  await fetch('/api/settings', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ schedule_enabled: document.getElementById('sched-enabled').checked,
+      interval_hours: parseFloat(document.getElementById('sched-interval').value)||24 })});
+  alert('تم حفظ الجدولة');
+}
+
+// ── keywords ──
+async function loadKeywords() {
+  const r = await fetch('/api/keywords'); const d = await r.json();
+  const el = document.getElementById('keywords');
+  el.innerHTML = d.keywords.map(k => `
+    <div class="flex items-center gap-2 bg-slate-800/50 rounded px-2 py-1 text-sm">
+      <input type="checkbox" ${k.enabled?'checked':''} onchange="toggleKeyword(${k.id}, this.checked)">
+      <span class="flex-1 truncate">${k.query}</span>
+      <button onclick="delKeyword(${k.id})" class="text-rose-400 text-xs">✕</button>
+    </div>`).join('') || '<div class="text-slate-500 text-xs">لا كلمات بعد.</div>';
+}
+async function addKeyword() {
+  const v = document.getElementById('kw-input').value.trim(); if(!v) return;
+  await fetch('/api/keywords', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({query:v}) });
+  document.getElementById('kw-input').value=''; loadKeywords();
+}
+async function delKeyword(id){ await fetch('/api/keywords/'+id,{method:'DELETE'}); loadKeywords(); }
+async function toggleKeyword(id, en){ await fetch('/api/keywords/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:en})}); }
 
 let logLines = [];
 const es = new EventSource('/api/stream');
@@ -199,6 +280,8 @@ es.onmessage = (e) => {
   if (m.type === 'log') { logLines.push(d.text); logLines = logLines.slice(-200);
     const el = document.getElementById('log'); el.innerText = logLines.join('\n'); el.scrollTop = el.scrollHeight; }
   else if (m.type === 'ad') { if (activeTab==='ads' && !queryFilter) { ads.unshift(d); if(ads.length>200)ads.pop(); renderAds(); } }
+  else if (m.type === 'queued') { logLines.push(`📤 أُرسل أمر سحب للكلمة "${d.query}" (رقم ${d.job_id}).`); loadJobs(); }
+  else if (m.type === 'job') { loadJobs(); if(d.stored){ loadStats(); loadStores(); loadQueries(); } }
   else if (m.type === 'started') { setState(true); }
   else if (m.type === 'finished') {
     document.getElementById('kpi-reported').innerText = d.reported ?? '-';
@@ -216,12 +299,9 @@ function setState(run) {
   document.getElementById('btn-start').className = 'md:col-span-3 rounded-lg px-4 py-2 font-bold text-sm ' + (run ? 'bg-slate-700 text-slate-400' : 'bg-emerald-600 hover:bg-emerald-500');
 }
 // live status poll
-let scrapeEnabled = true;
 function applyScrapeEnabled(enabled) {
-  scrapeEnabled = enabled;
-  document.getElementById('engine-controls').classList.toggle('hidden', !enabled);
-  document.getElementById('engine-options').classList.toggle('hidden', !enabled);
-  document.getElementById('engine-disabled').classList.toggle('hidden', enabled);
+  document.getElementById('engine-note').classList.toggle('hidden', enabled);
+  document.getElementById('btn-start').innerText = enabled ? '▶ بدء السحب' : '📤 أرسل أمر سحب';
 }
 setInterval(async () => {
   const r = await fetch('/api/status'); const s = await r.json();
@@ -233,7 +313,7 @@ setInterval(async () => {
   setState(s.running);
 }, 2500);
 
-loadStats(); loadAds();
+loadStats(); loadAds(); loadJobs(); loadSettings(); loadKeywords();
 </script>
 </body>
 </html>

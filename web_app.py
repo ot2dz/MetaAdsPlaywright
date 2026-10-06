@@ -14,6 +14,7 @@ import logging
 import os
 import queue
 import threading
+import time
 from datetime import datetime, timezone
 
 from flask import Flask, Response, jsonify, render_template, request, send_file
@@ -126,12 +127,24 @@ def index():
 # ── engine control ────────────────────────────────────────────────────────
 @app.route("/api/start", methods=["POST"])
 def api_start():
-    if not SCRAPE_ENABLED:
-        return jsonify({"error": "scraping is disabled on this host (display/ingest only)"}), 409
     cfg = request.get_json(force=True, silent=True) or {}
     query = (cfg.get("query") or "").strip()
     if not query:
         return jsonify({"error": "query required"}), 400
+
+    # No local browser on this host -> queue the job for a remote worker.
+    if not SCRAPE_ENABLED:
+        job_id = db.create_job(
+            query=query,
+            country=FIXED_COUNTRY,
+            exact_phrase=bool(cfg.get("exact", False)),
+            stores_only=bool(cfg.get("stores_only", False)),
+            sort_mode=cfg.get("sort", "total_impressions"),
+            source="manual",
+        )
+        manager.events.put({"type": "queued", "data": {"job_id": job_id, "query": query}})
+        return jsonify({"ok": True, "queued": True, "job_id": job_id})
+
     ok = manager.start(
         query=query,
         exact=bool(cfg.get("exact", False)),
@@ -229,6 +242,123 @@ def api_ingest():
     return jsonify({"ok": True, "received": len(ads), "stored": stored})
 
 
+# ── remote job queue ──────────────────────────────────────────────────────
+def _worker_token() -> str:
+    return (os.environ.get("WORKER_TOKEN") or os.environ.get("INGEST_TOKEN") or "").strip()
+
+
+def _worker_ok() -> bool:
+    expected = _worker_token()
+    provided = (request.headers.get("X-Worker-Token", "")
+                or request.headers.get("X-Ingest-Token", "")
+                or request.headers.get("Authorization", "").replace("Bearer ", "")).strip()
+    return bool(expected) and provided == expected
+
+
+@app.route("/api/jobs", methods=["GET"])
+def api_jobs():
+    return jsonify({"jobs": db.list_jobs(limit=60)})
+
+
+@app.route("/api/jobs", methods=["POST"])
+def api_create_job():
+    cfg = request.get_json(force=True, silent=True) or {}
+    query = (cfg.get("query") or "").strip()
+    if not query:
+        return jsonify({"error": "query required"}), 400
+    job_id = db.create_job(
+        query=query,
+        country=cfg.get("country", FIXED_COUNTRY),
+        exact_phrase=bool(cfg.get("exact", False)),
+        stores_only=bool(cfg.get("stores_only", False)),
+        sort_mode=cfg.get("sort", "total_impressions"),
+        source=cfg.get("source", "manual"),
+    )
+    return jsonify({"ok": True, "job_id": job_id})
+
+
+@app.route("/api/worker/next")
+def api_worker_next():
+    if not _worker_ok():
+        return jsonify({"error": "unauthorized"}), 401
+    worker_id = request.args.get("worker_id", "worker")
+    job = db.claim_next_job(worker_id)
+    if not job:
+        return ("", 204)
+    return jsonify({"job": job})
+
+
+@app.route("/api/worker/result", methods=["POST"])
+def api_worker_result():
+    if not _worker_ok():
+        return jsonify({"error": "unauthorized"}), 401
+    payload = request.get_json(force=True, silent=True) or {}
+    job_id = payload.get("job_id")
+    status = payload.get("status", "done")
+    error = payload.get("error", "")
+    ads = payload.get("ads") or []
+    query = payload.get("query", "")
+    country = payload.get("country", FIXED_COUNTRY)
+
+    stored = 0
+    for ad in ads:
+        if isinstance(ad, dict) and db.save_ad(ad, query=query, country=country):
+            stored += 1
+            manager.events.put({"type": "ad", "data": ad})
+    if job_id is not None:
+        db.finish_job(int(job_id), status=status, result_count=stored, error=error)
+    manager.events.put({"type": "job", "data": {"job_id": job_id, "status": status, "stored": stored}})
+    logger.info("worker result: job=%s status=%s stored=%s", job_id, status, stored)
+    return jsonify({"ok": True, "stored": stored})
+
+
+# ── keywords ──────────────────────────────────────────────────────────────
+@app.route("/api/keywords", methods=["GET"])
+def api_keywords():
+    return jsonify({"keywords": db.list_keywords()})
+
+
+@app.route("/api/keywords", methods=["POST"])
+def api_add_keyword():
+    cfg = request.get_json(force=True, silent=True) or {}
+    ok = db.add_keyword(cfg.get("query", ""))
+    return jsonify({"ok": ok})
+
+
+@app.route("/api/keywords/<int:kw_id>", methods=["DELETE"])
+def api_delete_keyword(kw_id):
+    db.delete_keyword(kw_id)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/keywords/<int:kw_id>", methods=["PATCH"])
+def api_toggle_keyword(kw_id):
+    cfg = request.get_json(force=True, silent=True) or {}
+    db.toggle_keyword(kw_id, bool(cfg.get("enabled", True)))
+    return jsonify({"ok": True})
+
+
+# ── settings / schedule ───────────────────────────────────────────────────
+@app.route("/api/settings", methods=["GET"])
+def api_get_settings():
+    s = db.get_settings()
+    return jsonify({
+        "schedule_enabled": s.get("schedule_enabled", "false"),
+        "interval_hours": s.get("interval_hours", "24"),
+        "last_scheduled_at": s.get("last_scheduled_at", ""),
+    })
+
+
+@app.route("/api/settings", methods=["POST"])
+def api_set_settings():
+    cfg = request.get_json(force=True, silent=True) or {}
+    if "schedule_enabled" in cfg:
+        db.set_setting("schedule_enabled", "true" if cfg["schedule_enabled"] else "false")
+    if "interval_hours" in cfg:
+        db.set_setting("interval_hours", str(cfg["interval_hours"]))
+    return jsonify({"ok": True, **db.get_settings()})
+
+
 @app.route("/api/export/<fmt>")
 def api_export(fmt: str):
     ads = db.get_ads(limit=100000, stores_only=False)
@@ -250,9 +380,48 @@ def api_export(fmt: str):
     return jsonify({"error": "unsupported format"}), 400
 
 
+def scheduler_loop() -> None:
+    """Enqueue jobs for enabled keywords on the configured interval."""
+    from datetime import timedelta
+    while True:
+        try:
+            # Recover jobs abandoned by a crashed/stopped worker.
+            n = db.requeue_stale_jobs(minutes=20)
+            if n:
+                manager.events.put({"type": "log", "data": {"text": f"♻️ أعيد {n} أمر عالق إلى قائمة الانتظار."}})
+            s = db.get_settings()
+            if s.get("schedule_enabled", "false").lower() in ("1", "true", "yes", "on"):
+                try:
+                    interval = float(s.get("interval_hours", "24") or 24)
+                except ValueError:
+                    interval = 24.0
+                last = s.get("last_scheduled_at", "")
+                due = True
+                if last:
+                    try:
+                        due = datetime.now(timezone.utc) - datetime.fromisoformat(last) >= timedelta(hours=interval)
+                    except Exception:
+                        due = True
+                if due:
+                    keywords = [k for k in db.list_keywords() if k.get("enabled")]
+                    for k in keywords:
+                        db.create_job(query=k["query"], country=FIXED_COUNTRY,
+                                      stores_only=True, sort_mode="total_impressions",
+                                      source="schedule")
+                    if keywords:
+                        db.set_setting("last_scheduled_at", datetime.now(timezone.utc).isoformat())
+                        manager.events.put({"type": "log",
+                                            "data": {"text": f"⏰ جدولة: أُضيفت {len(keywords)} مهمة سحب."}})
+        except Exception:
+            logger.exception("scheduler error")
+        time.sleep(60)
+
+
 if __name__ == "__main__":
     print("=" * 60)
-    print("  MetaAdsPlaywright dashboard -> http://127.0.0.1:5002")
+    print(f"  MetaAdsPlaywright dashboard -> http://127.0.0.1:{os.environ.get('PORT', '5002')}")
     print(f"  DB backend: {'PostgreSQL' if db.is_postgres else 'SQLite'}")
+    print(f"  Local scraping: {'ENABLED' if SCRAPE_ENABLED else 'DISABLED (worker mode)'}")
     print("=" * 60)
+    threading.Thread(target=scheduler_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5002")), debug=False)

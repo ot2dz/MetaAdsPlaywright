@@ -86,6 +86,40 @@ class Database:
         cur.execute(sql)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_meta_ads_store ON meta_ads (store_domain)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_meta_ads_query ON meta_ads (query)")
+
+        idcol = "SERIAL PRIMARY KEY" if self.is_postgres else "INTEGER PRIMARY KEY AUTOINCREMENT"
+        cur.execute(f"""
+        CREATE TABLE IF NOT EXISTS jobs (
+            id {idcol},
+            query TEXT,
+            country TEXT,
+            exact_phrase INTEGER DEFAULT 0,
+            stores_only INTEGER DEFAULT 0,
+            sort_mode TEXT DEFAULT 'total_impressions',
+            status TEXT DEFAULT 'pending',
+            source TEXT DEFAULT 'manual',
+            worker_id TEXT,
+            created_at TEXT,
+            started_at TEXT,
+            finished_at TEXT,
+            result_count INTEGER DEFAULT 0,
+            error TEXT
+        )
+        """)
+        cur.execute(f"""
+        CREATE TABLE IF NOT EXISTS keywords (
+            id {idcol},
+            query TEXT,
+            enabled INTEGER DEFAULT 1,
+            created_at TEXT
+        )
+        """)
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+        """)
         conn.commit()
         conn.close()
 
@@ -242,6 +276,128 @@ class Database:
 
     def clear_ads(self) -> None:
         self._execute("DELETE FROM meta_ads")
+
+    # ── jobs (remote scrape queue) ────────────────────────────────────────
+    def create_job(self, query: str, country: str = "DZ", exact_phrase: bool = False,
+                   stores_only: bool = False, sort_mode: str = "total_impressions",
+                   source: str = "manual") -> int:
+        p = self._ph()
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            if self.is_postgres:
+                cur.execute(
+                    f"INSERT INTO jobs (query, country, exact_phrase, stores_only, sort_mode, status, source, created_at) "
+                    f"VALUES ({p},{p},{p},{p},{p},{p},{p},{p}) RETURNING id",
+                    (query, country, int(exact_phrase), int(stores_only), sort_mode, "pending", source, _now()))
+                new_id = cur.fetchone()[0]
+            else:
+                cur.execute(
+                    "INSERT INTO jobs (query, country, exact_phrase, stores_only, sort_mode, status, source, created_at) "
+                    f"VALUES ({p},{p},{p},{p},{p},{p},{p},{p})",
+                    (query, country, int(exact_phrase), int(stores_only), sort_mode, "pending", source, _now()))
+                new_id = cur.lastrowid
+            conn.commit()
+            return int(new_id)
+        finally:
+            conn.close()
+
+    def list_jobs(self, limit: int = 50) -> list[dict]:
+        return self._query(f"SELECT * FROM jobs ORDER BY id DESC LIMIT {limit}")
+
+    def claim_next_job(self, worker_id: str) -> Optional[dict]:
+        """Atomically mark the oldest pending job as running and return it."""
+        p = self._ph()
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            if self.is_postgres:
+                cur.execute(
+                    "UPDATE jobs SET status='running', worker_id=%s, started_at=%s "
+                    "WHERE id = (SELECT id FROM jobs WHERE status='pending' ORDER BY id LIMIT 1) "
+                    "RETURNING *", (worker_id, _now()))
+                row = cur.fetchone()
+                if not row:
+                    return None
+                cols = [c[0] for c in cur.description]
+                return dict(zip(cols, row))
+            else:
+                cur.execute("SELECT id FROM jobs WHERE status='pending' ORDER BY id LIMIT 1")
+                r = cur.fetchone()
+                if not r:
+                    return None
+                jid = r[0]
+                cur.execute("UPDATE jobs SET status='running', worker_id=?, started_at=? WHERE id=?",
+                            (worker_id, _now(), jid))
+                conn.commit()
+                return self._query_one("SELECT * FROM jobs WHERE id=?", (jid,))
+        finally:
+            conn.close()
+
+    def finish_job(self, job_id: int, status: str = "done", result_count: int = 0,
+                   error: str = "") -> None:
+        p = self._ph()
+        self._execute(
+            f"UPDATE jobs SET status={p}, finished_at={p}, result_count={p}, error={p} WHERE id={p}",
+            (status, _now(), result_count, error, job_id))
+
+    def requeue_stale_jobs(self, minutes: int = 20) -> int:
+        """Return jobs stuck in 'running' for too long back to 'pending'."""
+        from datetime import timedelta
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
+        p = self._ph()
+        stale = self._query(
+            f"SELECT id FROM jobs WHERE status={p} AND started_at IS NOT NULL AND started_at < {p}",
+            ("running", cutoff))
+        for row in stale:
+            self._execute(
+                f"UPDATE jobs SET status={p}, worker_id=NULL, started_at=NULL WHERE id={p}",
+                ("pending", row["id"]))
+        return len(stale)
+
+    # ── keywords (tracked for scheduled scraping) ─────────────────────────
+    def add_keyword(self, query: str) -> bool:
+        query = (query or "").strip()
+        if not query:
+            return False
+        if self._query_one(f"SELECT id FROM keywords WHERE query={self._ph()}", (query,)):
+            return False
+        p = self._ph()
+        self._execute(f"INSERT INTO keywords (query, enabled, created_at) VALUES ({p},{p},{p})",
+                      (query, 1, _now()))
+        return True
+
+    def list_keywords(self) -> list[dict]:
+        return self._query("SELECT * FROM keywords ORDER BY id DESC")
+
+    def delete_keyword(self, kw_id: int) -> None:
+        self._execute(f"DELETE FROM keywords WHERE id={self._ph()}", (kw_id,))
+
+    def toggle_keyword(self, kw_id: int, enabled: bool) -> None:
+        self._execute(f"UPDATE keywords SET enabled={self._ph()} WHERE id={self._ph()}",
+                      (1 if enabled else 0, kw_id))
+
+    # ── settings (schedule) ───────────────────────────────────────────────
+    def get_settings(self) -> dict:
+        rows = self._query("SELECT key, value FROM settings")
+        return {r["key"]: r["value"] for r in rows}
+
+    def set_setting(self, key: str, value: str) -> None:
+        p = self._ph()
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            if self.is_postgres:
+                cur.execute(
+                    f"INSERT INTO settings (key, value) VALUES ({p},{p}) "
+                    f"ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", (key, value))
+            else:
+                cur.execute(
+                    f"INSERT INTO settings (key, value) VALUES ({p},{p}) "
+                    f"ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, value))
+            conn.commit()
+        finally:
+            conn.close()
 
 
 db = Database()
