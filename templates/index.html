@@ -77,12 +77,24 @@
         <button onclick="saveSchedule()" class="ms-auto bg-slate-800 hover:bg-slate-700 rounded px-3 py-1 text-xs">حفظ</button>
       </div>
       <div class="border-t border-slate-800 pt-3 space-y-2">
-        <div class="text-xs text-slate-400">الكلمات المتتبَّعة (تُسحب تلقائياً)</div>
+        <div class="text-xs text-slate-400">الأهداف المتتبَّعة (كلمات أو صفحات متاجر)</div>
         <div class="flex gap-2">
-          <input id="kw-input" placeholder="أضف كلمة…" class="flex-1 bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm">
+          <select id="kw-type" class="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm">
+            <option value="keyword">كلمة</option>
+            <option value="page">صفحة/متجر</option>
+          </select>
+          <input id="kw-input" placeholder="كلمة… أو رابط/ID صفحة" class="flex-1 bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm">
           <button onclick="addKeyword()" class="bg-emerald-700 hover:bg-emerald-600 rounded px-3 py-1 text-xs">+</button>
         </div>
         <div id="keywords" class="space-y-1 max-h-40 overflow-auto"></div>
+      </div>
+      <div class="border-t border-slate-800 pt-3 space-y-2">
+        <div class="text-xs text-slate-400">🔔 التنبيهات</div>
+        <label class="flex items-center gap-2 text-sm"><input type="checkbox" id="notify-enabled"> إرسال تنبيه عند إعلان جديد</label>
+        <input id="tg-token" placeholder="Telegram Bot Token" class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs">
+        <input id="tg-chat" placeholder="Telegram Chat ID" class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs">
+        <input id="notify-hook" placeholder="أو Webhook URL (اختياري)" class="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs">
+        <button onclick="saveNotify()" class="w-full bg-slate-800 hover:bg-slate-700 rounded px-3 py-1 text-xs">حفظ التنبيهات</button>
       </div>
     </div>
   </section>
@@ -173,6 +185,11 @@ async function loadQueries() {
     </tr>`).join('') || '<tr><td colspan="5" class="text-slate-500 py-2">لا كلمات بعد — ابدأ أول سحب.</td></tr>';
 }
 function filterByQuery(q){ queryFilter=q; showTab('ads'); loadAds(); }
+function isNewAd(a) {
+  if (!a.first_seen) return false;
+  const t = Date.parse(a.first_seen);
+  return !isNaN(t) && (Date.now() - t) < 24*3600*1000;
+}
 function renderAds() {
   const el = document.getElementById('ads');
   if (!ads.length) { el.innerHTML = '<div class="text-slate-500 text-sm">لا توجد نتائج بعد.</div>'; return; }
@@ -180,7 +197,10 @@ function renderAds() {
     <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-2">
       <div class="flex justify-between items-start gap-2">
         <div class="font-bold text-sm truncate">${a.page_name || '—'}</div>
-        ${a.is_active ? '<span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900 text-emerald-300">نشط</span>' : ''}
+        <div class="flex gap-1 shrink-0">
+          ${isNewAd(a) ? '<span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-900 text-amber-300">🆕 جديد</span>' : ''}
+          ${a.is_active ? '<span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900 text-emerald-300">نشط</span>' : ''}
+        </div>
       </div>
       ${a.store_domain ? `<div class="text-xs text-emerald-400">🏪 ${a.store_domain} <span class="text-slate-500">(${a.platform||''})</span></div>` : '<div class="text-xs text-slate-500">بدون رابط متجر</div>'}
       <div class="text-xs text-slate-400 line-clamp-3 h-10 overflow-hidden">${(a.body||'').slice(0,140)}</div>
@@ -262,6 +282,9 @@ async function loadSettings() {
   const r = await fetch('/api/settings'); const s = await r.json();
   document.getElementById('sched-enabled').checked = s.schedule_enabled === 'true';
   document.getElementById('sched-interval').value = s.interval_hours || 24;
+  document.getElementById('notify-enabled').checked = s.notify_enabled === 'true';
+  document.getElementById('tg-chat').value = s.telegram_chat_id || '';
+  document.getElementById('notify-hook').value = s.notify_webhook || '';
 }
 async function saveSchedule() {
   await fetch('/api/settings', { method:'POST', headers:{'Content-Type':'application/json'},
@@ -277,13 +300,26 @@ async function loadKeywords() {
   el.innerHTML = d.keywords.map(k => `
     <div class="flex items-center gap-2 bg-slate-800/50 rounded px-2 py-1 text-sm">
       <input type="checkbox" ${k.enabled?'checked':''} onchange="toggleKeyword(${k.id}, this.checked)">
-      <span class="flex-1 truncate">${k.query}</span>
+      <span class="text-[10px] px-1.5 py-0.5 rounded ${ (k.type==='page')?'bg-violet-950 text-violet-300':'bg-sky-950 text-sky-300' }">${(k.type==='page')?'صفحة':'كلمة'}</span>
+      <span class="flex-1 truncate">${k.label || k.query}</span>
       <button onclick="delKeyword(${k.id})" class="text-rose-400 text-xs">✕</button>
-    </div>`).join('') || '<div class="text-slate-500 text-xs">لا كلمات بعد.</div>';
+    </div>`).join('') || '<div class="text-slate-500 text-xs">لا أهداف بعد.</div>';
+}
+async function saveNotify() {
+  await fetch('/api/settings', { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      notify_enabled: document.getElementById('notify-enabled').checked,
+      telegram_token: document.getElementById('tg-token').value.trim(),
+      telegram_chat_id: document.getElementById('tg-chat').value.trim(),
+      notify_webhook: document.getElementById('notify-hook').value.trim() })});
+  alert('تم حفظ إعدادات التنبيهات');
 }
 async function addKeyword() {
   const v = document.getElementById('kw-input').value.trim(); if(!v) return;
-  await fetch('/api/keywords', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({query:v}) });
+  const type = document.getElementById('kw-type').value;
+  const r = await fetch('/api/keywords', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({query:v, type:type}) });
+  const d = await r.json();
+  if (!d.ok) { alert(d.error || 'تعذّر الإضافة'); return; }
   document.getElementById('kw-input').value=''; loadKeywords();
 }
 async function delKeyword(id){ await fetch('/api/keywords/'+id,{method:'DELETE'}); loadKeywords(); }

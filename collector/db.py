@@ -80,7 +80,8 @@ class Database:
             publisher_platforms TEXT,
             query TEXT,
             country TEXT,
-            collected_at TEXT
+            collected_at TEXT,
+            first_seen TEXT
         )
         """
         cur.execute(sql)
@@ -141,6 +142,21 @@ class Database:
                         cur.execute(f"ALTER TABLE jobs ADD COLUMN {col} {ddl}")
             except Exception:
                 pass
+        # Migrations for meta_ads (first_seen) and keywords (type).
+        for table, col, ddl in [
+            ("meta_ads", "first_seen", "TEXT"),
+            ("keywords", "type", "TEXT DEFAULT 'keyword'"),
+            ("keywords", "label", "TEXT DEFAULT ''"),
+        ]:
+            try:
+                if self.is_postgres:
+                    cur.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {ddl}")
+                else:
+                    cols = [r[1] for r in cur.execute(f"PRAGMA table_info({table})").fetchall()]
+                    if col not in cols:
+                        cur.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+            except Exception:
+                pass
         conn.commit()
         conn.close()
 
@@ -173,12 +189,18 @@ class Database:
 
     # ── public API ────────────────────────────────────────────────────────
     def save_ad(self, ad: dict[str, Any], query: str = "", country: str = "DZ") -> bool:
+        """Upsert an ad. Returns True if the ad is NEW (first time seen)."""
         p = self._ph()
+        ad_id = str(ad.get("ad_id") or "")
+        if not ad_id:
+            return False
+        is_new = not self.ad_exists(ad_id)
         cols = ("ad_id", "page_name", "page_id", "start_date", "is_active", "link_url",
                 "store_domain", "platform", "body", "cta_text", "collation_count",
-                "publisher_platforms", "query", "country", "collected_at")
+                "publisher_platforms", "query", "country", "collected_at", "first_seen")
+        now = _now()
         values = (
-            str(ad.get("ad_id") or ""),
+            ad_id,
             ad.get("page_name") or "",
             str(ad.get("page_id") or ""),
             str(ad.get("start_date") or ""),
@@ -192,31 +214,34 @@ class Database:
             json.dumps(ad.get("publisher_platforms") or [], ensure_ascii=False),
             query,
             country,
-            _now(),
+            now,
+            now,
         )
-        if not values[0]:
-            return False
         placeholders = ", ".join([p] * len(cols))
         col_list = ", ".join(cols)
         conn = self._connect()
         try:
             cur = conn.cursor()
+            # first_seen is preserved on updates (insert-only).
             if self.is_postgres:
-                updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c != "ad_id")
+                updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c not in ("ad_id", "first_seen"))
                 sql = (f"INSERT INTO meta_ads ({col_list}) VALUES ({placeholders}) "
                        f"ON CONFLICT (ad_id) DO UPDATE SET {updates}")
             else:
-                updates = ", ".join(f"{c} = excluded.{c}" for c in cols if c != "ad_id")
+                updates = ", ".join(f"{c} = excluded.{c}" for c in cols if c not in ("ad_id", "first_seen"))
                 sql = (f"INSERT INTO meta_ads ({col_list}) VALUES ({placeholders}) "
                        f"ON CONFLICT(ad_id) DO UPDATE SET {updates}")
             cur.execute(sql, values)
             conn.commit()
-            return True
+            return is_new
         except Exception as exc:
             logger.error("save_ad failed: %s", exc)
             return False
         finally:
             conn.close()
+
+    def ad_exists(self, ad_id: str) -> bool:
+        return self._query_one(f"SELECT 1 AS x FROM meta_ads WHERE ad_id={self._ph()}", (str(ad_id),)) is not None
 
     def get_ads(self, limit: int = 100, offset: int = 0, search: str = "",
                 stores_only: bool = False, query: str = "") -> list[dict]:
@@ -389,15 +414,16 @@ class Database:
         return len(stale)
 
     # ── keywords (tracked for scheduled scraping) ─────────────────────────
-    def add_keyword(self, query: str) -> bool:
+    def add_keyword(self, query: str, type: str = "keyword", label: str = "") -> bool:
         query = (query or "").strip()
         if not query:
             return False
         if self._query_one(f"SELECT id FROM keywords WHERE query={self._ph()}", (query,)):
             return False
         p = self._ph()
-        self._execute(f"INSERT INTO keywords (query, enabled, created_at) VALUES ({p},{p},{p})",
-                      (query, 1, _now()))
+        self._execute(
+            f"INSERT INTO keywords (query, enabled, created_at, type, label) VALUES ({p},{p},{p},{p},{p})",
+            (query, 1, _now(), type, label or query))
         return True
 
     def list_keywords(self) -> list[dict]:

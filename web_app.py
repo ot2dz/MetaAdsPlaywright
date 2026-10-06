@@ -306,16 +306,33 @@ def api_worker_result():
     query = payload.get("query", "")
     country = payload.get("country", FIXED_COUNTRY)
 
-    stored = 0
+    new_ads = []
     for ad in ads:
-        if isinstance(ad, dict) and db.save_ad(ad, query=query, country=country):
-            stored += 1
-            manager.events.put({"type": "ad", "data": ad})
+        if not isinstance(ad, dict):
+            continue
+        if db.save_ad(ad, query=query, country=country):
+            new_ads.append(ad)
+        manager.events.put({"type": "ad", "data": ad})
+
     if job_id is not None:
-        db.finish_job(int(job_id), status=status, result_count=stored, error=error)
-    manager.events.put({"type": "job", "data": {"job_id": job_id, "status": status, "stored": stored}})
-    logger.info("worker result: job=%s status=%s stored=%s", job_id, status, stored)
-    return jsonify({"ok": True, "stored": stored})
+        db.finish_job(int(job_id), status=status, result_count=len(ads), error=error)
+
+    # Notify about newly discovered ads.
+    if new_ads:
+        try:
+            from collector.notify import notify_new_ads
+            job = db.get_job(int(job_id)) if job_id is not None else None
+            target = query or (job.get("url") if job else "") or ""
+            res = notify_new_ads(db.get_settings(), target, new_ads, db.count_ads())
+            if res.get("sent"):
+                logger.info("notification sent for %s new ads", len(new_ads))
+        except Exception:
+            logger.exception("notification error")
+
+    manager.events.put({"type": "job", "data": {
+        "job_id": job_id, "status": status, "stored": len(ads), "new": len(new_ads)}})
+    logger.info("worker result: job=%s status=%s ads=%s new=%s", job_id, status, len(ads), len(new_ads))
+    return jsonify({"ok": True, "stored": len(ads), "new": len(new_ads)})
 
 
 @app.route("/api/worker/progress", methods=["POST"])
@@ -354,7 +371,18 @@ def api_keywords():
 @app.route("/api/keywords", methods=["POST"])
 def api_add_keyword():
     cfg = request.get_json(force=True, silent=True) or {}
-    ok = db.add_keyword(cfg.get("query", ""))
+    raw = (cfg.get("query") or "").strip()
+    typ = cfg.get("type", "keyword")
+    if not raw:
+        return jsonify({"ok": False, "error": "empty"}), 400
+    if typ == "page":
+        from collector.pages import extract_page_id
+        pid = extract_page_id(raw)
+        if not pid:
+            return jsonify({"ok": False, "error": "could not extract page id"}), 400
+        ok = db.add_keyword(pid, type="page", label=cfg.get("label") or pid)
+    else:
+        ok = db.add_keyword(raw, type="keyword", label=cfg.get("label") or raw)
     return jsonify({"ok": ok})
 
 
@@ -379,6 +407,10 @@ def api_get_settings():
         "schedule_enabled": s.get("schedule_enabled", "false"),
         "interval_hours": s.get("interval_hours", "24"),
         "last_scheduled_at": s.get("last_scheduled_at", ""),
+        "notify_enabled": s.get("notify_enabled", "false"),
+        "telegram_chat_id": s.get("telegram_chat_id", ""),
+        "has_telegram_token": bool(s.get("telegram_token")),
+        "notify_webhook": s.get("notify_webhook", ""),
     })
 
 
@@ -389,7 +421,15 @@ def api_set_settings():
         db.set_setting("schedule_enabled", "true" if cfg["schedule_enabled"] else "false")
     if "interval_hours" in cfg:
         db.set_setting("interval_hours", str(cfg["interval_hours"]))
-    return jsonify({"ok": True, **db.get_settings()})
+    if "notify_enabled" in cfg:
+        db.set_setting("notify_enabled", "true" if cfg["notify_enabled"] else "false")
+    if "telegram_token" in cfg and cfg["telegram_token"]:
+        db.set_setting("telegram_token", cfg["telegram_token"].strip())
+    if "telegram_chat_id" in cfg:
+        db.set_setting("telegram_chat_id", str(cfg["telegram_chat_id"]).strip())
+    if "notify_webhook" in cfg:
+        db.set_setting("notify_webhook", cfg["notify_webhook"].strip())
+    return jsonify({"ok": True})
 
 
 @app.route("/api/export/<fmt>")
@@ -437,10 +477,15 @@ def scheduler_loop() -> None:
                         due = True
                 if due:
                     keywords = [k for k in db.list_keywords() if k.get("enabled")]
+                    from collector.pages import page_url
                     for k in keywords:
-                        db.create_job(query=k["query"], country=FIXED_COUNTRY,
-                                      stores_only=True, sort_mode="total_impressions",
-                                      source="schedule")
+                        if (k.get("type") or "keyword") == "page":
+                            db.create_job(query="", url=page_url(k["query"], FIXED_COUNTRY),
+                                          stores_only=True, source="schedule")
+                        else:
+                            db.create_job(query=k["query"], country=FIXED_COUNTRY,
+                                          stores_only=True, sort_mode="total_impressions",
+                                          source="schedule")
                     if keywords:
                         db.set_setting("last_scheduled_at", datetime.now(timezone.utc).isoformat())
                         manager.events.put({"type": "log",
