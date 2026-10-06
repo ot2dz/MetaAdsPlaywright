@@ -141,6 +141,7 @@ def api_start():
             country=FIXED_COUNTRY,
             exact_phrase=bool(cfg.get("exact", False)),
             stores_only=bool(cfg.get("stores_only", False)),
+            sweep=bool(cfg.get("sweep", False)),
             sort_mode=cfg.get("sort", "total_impressions"),
             source="manual",
         )
@@ -275,6 +276,7 @@ def api_create_job():
         country=cfg.get("country", FIXED_COUNTRY),
         exact_phrase=bool(cfg.get("exact", False)),
         stores_only=bool(cfg.get("stores_only", False)),
+        sweep=bool(cfg.get("sweep", False)),
         sort_mode=cfg.get("sort", "total_impressions"),
         source=cfg.get("source", "manual"),
     )

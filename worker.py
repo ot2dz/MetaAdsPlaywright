@@ -21,6 +21,7 @@ import urllib.error
 import urllib.request
 
 from collector.scraper import scrape
+from collector.slicing import build_pass_urls
 
 
 def _req(url: str, token: str, method: str = "GET", payload: dict | None = None):
@@ -41,21 +42,25 @@ def run_job(base_url: str, token: str, job: dict) -> dict:
     exact = bool(job.get("exact_phrase"))
     stores_only = bool(job.get("stores_only"))
     sort_mode = job.get("sort_mode") or "total_impressions"
+    sweep = bool(job.get("sweep")) and bool(job_url)
     job_id = job.get("id")
     label = query or job_url or "(url)"
-    print(f"  ▶ سحب: {label!r} (url={bool(job_url)}, exact={exact}, stores_only={stores_only})")
+    print(f"  ▶ سحب: {label!r} (url={bool(job_url)}, sweep={sweep}, stores_only={stores_only})")
 
-    state = {"count": 0, "stop": False}
+    # Union across passes, keyed by ad_id.
+    merged: dict[str, dict] = {}
+    state = {"stop": False, "pass": 0, "passes": 1}
 
     def on_ad(ad):
-        state["count"] += 1
+        d = ad.to_dict()
+        if d.get("ad_id"):
+            merged[d["ad_id"]] = d
 
     def should_stop() -> bool:
-        # Called every scroll iteration: report progress and read the stop flag.
+        note = f"تمريرة {state['pass']}/{state['passes']} · {len(merged)} إعلان"
         try:
             _, r = _req(f"{base_url}/api/worker/progress", token, method="POST",
-                        payload={"job_id": job_id, "progress": state["count"],
-                                 "note": f"{state['count']} إعلان"})
+                        payload={"job_id": job_id, "progress": len(merged), "note": note})
             if r and r.get("stop"):
                 state["stop"] = True
                 print("  ⏹ طُلب الإيقاف من اللوحة — إيقاف السحب.")
@@ -64,17 +69,37 @@ def run_job(base_url: str, token: str, job: dict) -> dict:
             pass
         return False
 
-    result = scrape(query, country=country, url=job_url or None, exact_phrase=exact,
-                    stores_only=stores_only, sort_mode=sort_mode,
-                    progress=lambda m: print(f"    {m}"),
-                    on_ad=on_ad, should_stop=should_stop)
+    if sweep:
+        passes = build_pass_urls(job_url)
+        state["passes"] = len(passes)
+        for i, p in enumerate(passes, 1):
+            if state["stop"]:
+                break
+            state["pass"] = i
+            win = p["window"]
+            win_label = f"{win[0]}..{win[1]}" if win else "all"
+            print(f"  ↻ تمريرة {i}/{len(passes)} [{p['sort']} | {win_label}] — تراكمي {len(merged)}")
+            try:
+                scrape(query, country=country, url=p["url"], stores_only=False,
+                       progress=lambda m: None, on_ad=on_ad, should_stop=should_stop)
+            except Exception as exc:
+                print(f"    ⚠️ تمريرة {i} فشلت: {exc}")
+    else:
+        scrape(query, country=country, url=job_url or None, exact_phrase=exact,
+               stores_only=False, sort_mode=sort_mode,
+               progress=lambda m: print(f"    {m}"),
+               on_ad=on_ad, should_stop=should_stop)
+
+    ads = list(merged.values())
+    if stores_only:
+        ads = [a for a in ads if a.get("store_domain")]
     return {
         "job_id": job_id,
         "status": "stopped" if state["stop"] else "done",
         "query": query,
         "country": country,
-        "ads": [a.to_dict() for a in result.ads],
-        "reported": result.reported_count,
+        "ads": ads,
+        "reported": len(ads),
     }
 
 

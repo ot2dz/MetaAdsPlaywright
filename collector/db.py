@@ -96,6 +96,7 @@ class Database:
             country TEXT,
             exact_phrase INTEGER DEFAULT 0,
             stores_only INTEGER DEFAULT 0,
+            sweep INTEGER DEFAULT 0,
             sort_mode TEXT DEFAULT 'total_impressions',
             status TEXT DEFAULT 'pending',
             source TEXT DEFAULT 'manual',
@@ -129,6 +130,7 @@ class Database:
             ("progress_note", "TEXT DEFAULT ''"),
             ("stop_requested", "INTEGER DEFAULT 0"),
             ("url", "TEXT DEFAULT ''"),
+            ("sweep", "INTEGER DEFAULT 0"),
         ]:
             try:
                 if self.is_postgres:
@@ -299,22 +301,22 @@ class Database:
     # ── jobs (remote scrape queue) ────────────────────────────────────────
     def create_job(self, query: str, country: str = "DZ", exact_phrase: bool = False,
                    stores_only: bool = False, sort_mode: str = "total_impressions",
-                   source: str = "manual", url: str = "") -> int:
+                   source: str = "manual", url: str = "", sweep: bool = False) -> int:
         p = self._ph()
         conn = self._connect()
         try:
             cur = conn.cursor()
             if self.is_postgres:
                 cur.execute(
-                    f"INSERT INTO jobs (query, url, country, exact_phrase, stores_only, sort_mode, status, source, created_at) "
-                    f"VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p}) RETURNING id",
-                    (query, url, country, int(exact_phrase), int(stores_only), sort_mode, "pending", source, _now()))
+                    f"INSERT INTO jobs (query, url, country, exact_phrase, stores_only, sweep, sort_mode, status, source, created_at) "
+                    f"VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p}) RETURNING id",
+                    (query, url, country, int(exact_phrase), int(stores_only), int(sweep), sort_mode, "pending", source, _now()))
                 new_id = cur.fetchone()[0]
             else:
                 cur.execute(
-                    "INSERT INTO jobs (query, url, country, exact_phrase, stores_only, sort_mode, status, source, created_at) "
-                    f"VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p})",
-                    (query, url, country, int(exact_phrase), int(stores_only), sort_mode, "pending", source, _now()))
+                    "INSERT INTO jobs (query, url, country, exact_phrase, stores_only, sweep, sort_mode, status, source, created_at) "
+                    f"VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p})",
+                    (query, url, country, int(exact_phrase), int(stores_only), int(sweep), sort_mode, "pending", source, _now()))
                 new_id = cur.lastrowid
             conn.commit()
             return int(new_id)
