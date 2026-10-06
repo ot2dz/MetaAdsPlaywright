@@ -121,6 +121,23 @@ class Database:
         )
         """)
         conn.commit()
+
+        # Idempotent migrations for the jobs table (progress + stop control).
+        for col, ddl in [
+            ("progress", "INTEGER DEFAULT 0"),
+            ("progress_note", "TEXT DEFAULT ''"),
+            ("stop_requested", "INTEGER DEFAULT 0"),
+        ]:
+            try:
+                if self.is_postgres:
+                    cur.execute(f"ALTER TABLE jobs ADD COLUMN IF NOT EXISTS {col} {ddl}")
+                else:
+                    cols = [r[1] for r in cur.execute("PRAGMA table_info(jobs)").fetchall()]
+                    if col not in cols:
+                        cur.execute(f"ALTER TABLE jobs ADD COLUMN {col} {ddl}")
+            except Exception:
+                pass
+        conn.commit()
         conn.close()
 
     # ── low-level helpers ─────────────────────────────────────────────────
@@ -340,6 +357,18 @@ class Database:
         self._execute(
             f"UPDATE jobs SET status={p}, finished_at={p}, result_count={p}, error={p} WHERE id={p}",
             (status, _now(), result_count, error, job_id))
+
+    def update_job_progress(self, job_id: int, progress: int, note: str = "") -> None:
+        p = self._ph()
+        self._execute(
+            f"UPDATE jobs SET progress={p}, progress_note={p} WHERE id={p}",
+            (progress, note, job_id))
+
+    def request_stop(self, job_id: int) -> None:
+        self._execute(f"UPDATE jobs SET stop_requested={self._ph()} WHERE id={self._ph()}", (1, job_id))
+
+    def get_job(self, job_id: int) -> Optional[dict]:
+        return self._query_one(f"SELECT * FROM jobs WHERE id={self._ph()}", (job_id,))
 
     def requeue_stale_jobs(self, minutes: int = 20) -> int:
         """Return jobs stuck in 'running' for too long back to 'pending'."""

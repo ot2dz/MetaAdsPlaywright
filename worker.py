@@ -40,14 +40,35 @@ def run_job(base_url: str, token: str, job: dict) -> dict:
     exact = bool(job.get("exact_phrase"))
     stores_only = bool(job.get("stores_only"))
     sort_mode = job.get("sort_mode") or "total_impressions"
+    job_id = job.get("id")
     print(f"  ▶ سحب: {query!r} (exact={exact}, stores_only={stores_only})")
+
+    state = {"count": 0, "stop": False}
+
+    def on_ad(ad):
+        state["count"] += 1
+
+    def should_stop() -> bool:
+        # Called every scroll iteration: report progress and read the stop flag.
+        try:
+            _, r = _req(f"{base_url}/api/worker/progress", token, method="POST",
+                        payload={"job_id": job_id, "progress": state["count"],
+                                 "note": f"{state['count']} إعلان"})
+            if r and r.get("stop"):
+                state["stop"] = True
+                print("  ⏹ طُلب الإيقاف من اللوحة — إيقاف السحب.")
+                return True
+        except Exception:
+            pass
+        return False
 
     result = scrape(query, country=country, exact_phrase=exact,
                     stores_only=stores_only, sort_mode=sort_mode,
-                    progress=lambda m: print(f"    {m}"))
+                    progress=lambda m: print(f"    {m}"),
+                    on_ad=on_ad, should_stop=should_stop)
     return {
-        "job_id": job.get("id"),
-        "status": "done",
+        "job_id": job_id,
+        "status": "stopped" if state["stop"] else "done",
         "query": query,
         "country": country,
         "ads": [a.to_dict() for a in result.ads],

@@ -222,24 +222,34 @@ async function resetAll(){ if(!confirm('مسح كل الإعلانات؟'))retur
 function exportData(f){ window.location = '/api/export/' + f; }
 
 // ── jobs ──
-const JOB_AR = { pending:'في الانتظار', running:'قيد التنفيذ', done:'انتهى', failed:'فشل' };
+const JOB_AR = { pending:'في الانتظار', running:'قيد التنفيذ', done:'انتهى', failed:'فشل', stopped:'أُوقف', stopping:'جارٍ الإيقاف' };
 async function loadJobs() {
   const r = await fetch('/api/jobs'); const d = await r.json();
   const el = document.getElementById('jobs');
   if (!d.jobs.length) { el.innerHTML = '<div class="text-slate-500 text-sm">لا أوامر بعد.</div>'; return; }
-  const color = { pending:'text-slate-300 bg-slate-800', running:'text-sky-300 bg-sky-950', done:'text-emerald-300 bg-emerald-950', failed:'text-rose-300 bg-rose-950' };
-  el.innerHTML = d.jobs.map(j => `
-    <div class="flex items-center justify-between gap-2 bg-slate-800/50 rounded-lg px-3 py-2 text-sm">
-      <div class="truncate">
-        <span class="font-bold">${j.query}</span>
-        <span class="text-[11px] text-slate-500"> · ${j.source==='schedule'?'مجدول':'يدوي'}</span>
+  const color = { pending:'text-slate-300 bg-slate-800', running:'text-sky-300 bg-sky-950', done:'text-emerald-300 bg-emerald-950', failed:'text-rose-300 bg-rose-950', stopped:'text-amber-300 bg-amber-950', stopping:'text-amber-300 bg-amber-950' };
+  el.innerHTML = d.jobs.map(j => {
+    const live = (j.status==='running');
+    const prog = j.progress || j.result_count || 0;
+    return `
+    <div class="bg-slate-800/50 rounded-lg px-3 py-2 text-sm space-y-1">
+      <div class="flex items-center justify-between gap-2">
+        <div class="truncate">
+          <span class="font-bold">${j.query}</span>
+          <span class="text-[11px] text-slate-500"> · ${j.source==='schedule'?'مجدول':'يدوي'}</span>
+        </div>
+        <div class="flex items-center gap-2 shrink-0">
+          ${(j.status==='done'||j.status==='stopped')?`<span class="text-[11px] text-emerald-400 num">${j.result_count||0} إعلان</span>`:''}
+          <span class="text-[11px] px-2 py-0.5 rounded ${color[j.status]||'bg-slate-800'}">${JOB_AR[j.status]||j.status}</span>
+          ${live?`<button onclick="stopJob(${j.id})" class="text-[11px] text-rose-400 hover:underline">⏹ إيقاف</button>`:''}
+        </div>
       </div>
-      <div class="flex items-center gap-2 shrink-0">
-        ${j.status==='done'?`<span class="text-[11px] text-emerald-400 num">${j.result_count||0} إعلان</span>`:''}
-        <span class="text-[11px] px-2 py-0.5 rounded ${color[j.status]||'bg-slate-800'}">${JOB_AR[j.status]||j.status}</span>
-      </div>
-    </div>`).join('');
+      ${live?`<div class="text-[11px] text-sky-300">📥 ${prog} إعلان مسحوب ${j.progress_note?('· '+j.progress_note):''}</div>
+        <div class="h-1.5 bg-slate-700 rounded overflow-hidden"><div class="h-full bg-sky-500 animate-pulse" style="width:100%"></div></div>`:''}
+    </div>`;
+  }).join('');
 }
+async function stopJob(id){ await fetch('/api/jobs/'+id+'/stop',{method:'POST'}); loadJobs(); }
 
 // ── schedule ──
 async function loadSettings() {
@@ -281,6 +291,7 @@ es.onmessage = (e) => {
     const el = document.getElementById('log'); el.innerText = logLines.join('\n'); el.scrollTop = el.scrollHeight; }
   else if (m.type === 'ad') { if (activeTab==='ads' && !queryFilter) { ads.unshift(d); if(ads.length>200)ads.pop(); renderAds(); } }
   else if (m.type === 'queued') { logLines.push(`📤 أُرسل أمر سحب للكلمة "${d.query}" (رقم ${d.job_id}).`); loadJobs(); }
+  else if (m.type === 'progress') { loadJobs(); }
   else if (m.type === 'job') { loadJobs(); if(d.stored){ loadStats(); loadStores(); loadQueries(); } }
   else if (m.type === 'started') { setState(true); }
   else if (m.type === 'finished') {
@@ -314,6 +325,7 @@ setInterval(async () => {
 }, 2500);
 
 loadStats(); loadAds(); loadJobs(); loadSettings(); loadKeywords();
+setInterval(loadJobs, 5000);
 </script>
 </body>
 </html>

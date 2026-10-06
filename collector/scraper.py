@@ -199,6 +199,7 @@ def scrape(
     stores_only: bool = False,
     progress: Optional[Callable[[str], None]] = None,
     on_ad: Optional[Callable[[Ad], None]] = None,
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> ScrapeResult:
     """Scrape every ad Facebook loads for `query` using a real browser."""
     log = progress or (lambda msg: None)
@@ -302,6 +303,9 @@ def scrape(
 
         last, stable = 0, 0
         for i in range(max_scrolls):
+            if should_stop and should_stop():
+                log("Stopped by request.")
+                break
             acquire()
             page.mouse.wheel(0, 30000)
             page.wait_for_timeout(scroll_pause_ms)

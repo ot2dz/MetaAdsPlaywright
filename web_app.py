@@ -312,6 +312,33 @@ def api_worker_result():
     return jsonify({"ok": True, "stored": stored})
 
 
+@app.route("/api/worker/progress", methods=["POST"])
+def api_worker_progress():
+    """Worker reports live progress; response tells it whether to stop."""
+    if not _worker_ok():
+        return jsonify({"error": "unauthorized"}), 401
+    payload = request.get_json(force=True, silent=True) or {}
+    job_id = payload.get("job_id")
+    progress = int(payload.get("progress", 0))
+    note = payload.get("note", "")
+    if job_id is not None:
+        db.update_job_progress(int(job_id), progress, note)
+    stop = False
+    if job_id is not None:
+        job = db.get_job(int(job_id))
+        stop = bool(job and job.get("stop_requested"))
+    manager.events.put({"type": "progress",
+                        "data": {"job_id": job_id, "progress": progress, "note": note, "stop": stop}})
+    return jsonify({"ok": True, "stop": stop})
+
+
+@app.route("/api/jobs/<int:job_id>/stop", methods=["POST"])
+def api_job_stop(job_id):
+    db.request_stop(job_id)
+    manager.events.put({"type": "job", "data": {"job_id": job_id, "status": "stopping"}})
+    return jsonify({"ok": True})
+
+
 # ── keywords ──────────────────────────────────────────────────────────────
 @app.route("/api/keywords", methods=["GET"])
 def api_keywords():
