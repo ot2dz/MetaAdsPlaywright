@@ -44,6 +44,9 @@
       </select>
       <button id="btn-start" onclick="startEngine()" class="md:col-span-3 bg-emerald-600 hover:bg-emerald-500 rounded-lg px-4 py-2 font-bold text-sm">▶ بدء السحب</button>
     </div>
+    <div>
+      <input id="q-url" placeholder="أو الصق رابط مكتبة إعلانات كامل (سيُستخدم كما هو ويتجاهل الكلمة أعلاه)…" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+    </div>
     <div class="flex items-center gap-5 text-sm flex-wrap">
       <label class="flex items-center gap-2"><input type="checkbox" id="exact"> عبارة حرفية</label>
       <label class="flex items-center gap-2"><input type="checkbox" id="stores_only" checked> المتاجر فقط</label>
@@ -207,9 +210,10 @@ function showTab(t) {
 }
 async function startEngine() {
   const q = document.getElementById('q').value.trim();
-  if (!q) return alert('اكتب كلمة مفتاحية');
+  const url = document.getElementById('q-url').value.trim();
+  if (!q && !url) return alert('اكتب كلمة مفتاحية أو الصق رابطاً');
   const r = await fetch('/api/start', { method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ query:q,
+    body: JSON.stringify({ query:q, url:url,
       exact:document.getElementById('exact').checked,
       stores_only:document.getElementById('stores_only').checked,
       sort:document.getElementById('sort').value })});
@@ -235,7 +239,7 @@ async function loadJobs() {
     <div class="bg-slate-800/50 rounded-lg px-3 py-2 text-sm space-y-1">
       <div class="flex items-center justify-between gap-2">
         <div class="truncate">
-          <span class="font-bold">${j.query}</span>
+          <span class="font-bold">${j.query || '🔗 رابط مخصص'}</span>
           <span class="text-[11px] text-slate-500"> · ${j.source==='schedule'?'مجدول':'يدوي'}</span>
         </div>
         <div class="flex items-center gap-2 shrink-0">

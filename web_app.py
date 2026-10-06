@@ -128,21 +128,23 @@ def index():
 @app.route("/api/start", methods=["POST"])
 def api_start():
     cfg = request.get_json(force=True, silent=True) or {}
+    url = (cfg.get("url") or "").strip()
     query = (cfg.get("query") or "").strip()
-    if not query:
-        return jsonify({"error": "query required"}), 400
+    if not url and not query:
+        return jsonify({"error": "query or url required"}), 400
 
     # No local browser on this host -> queue the job for a remote worker.
     if not SCRAPE_ENABLED:
         job_id = db.create_job(
             query=query,
+            url=url,
             country=FIXED_COUNTRY,
             exact_phrase=bool(cfg.get("exact", False)),
             stores_only=bool(cfg.get("stores_only", False)),
             sort_mode=cfg.get("sort", "total_impressions"),
             source="manual",
         )
-        manager.events.put({"type": "queued", "data": {"job_id": job_id, "query": query}})
+        manager.events.put({"type": "queued", "data": {"job_id": job_id, "query": query or url}})
         return jsonify({"ok": True, "queued": True, "job_id": job_id})
 
     ok = manager.start(
@@ -263,11 +265,13 @@ def api_jobs():
 @app.route("/api/jobs", methods=["POST"])
 def api_create_job():
     cfg = request.get_json(force=True, silent=True) or {}
+    url = (cfg.get("url") or "").strip()
     query = (cfg.get("query") or "").strip()
-    if not query:
-        return jsonify({"error": "query required"}), 400
+    if not url and not query:
+        return jsonify({"error": "query or url required"}), 400
     job_id = db.create_job(
         query=query,
+        url=url,
         country=cfg.get("country", FIXED_COUNTRY),
         exact_phrase=bool(cfg.get("exact", False)),
         stores_only=bool(cfg.get("stores_only", False)),

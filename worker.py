@@ -36,12 +36,14 @@ def _req(url: str, token: str, method: str = "GET", payload: dict | None = None)
 
 def run_job(base_url: str, token: str, job: dict) -> dict:
     query = job.get("query", "")
+    job_url = (job.get("url") or "").strip()
     country = job.get("country") or "DZ"
     exact = bool(job.get("exact_phrase"))
     stores_only = bool(job.get("stores_only"))
     sort_mode = job.get("sort_mode") or "total_impressions"
     job_id = job.get("id")
-    print(f"  ▶ سحب: {query!r} (exact={exact}, stores_only={stores_only})")
+    label = query or job_url or "(url)"
+    print(f"  ▶ سحب: {label!r} (url={bool(job_url)}, exact={exact}, stores_only={stores_only})")
 
     state = {"count": 0, "stop": False}
 
@@ -62,7 +64,7 @@ def run_job(base_url: str, token: str, job: dict) -> dict:
             pass
         return False
 
-    result = scrape(query, country=country, exact_phrase=exact,
+    result = scrape(query, country=country, url=job_url or None, exact_phrase=exact,
                     stores_only=stores_only, sort_mode=sort_mode,
                     progress=lambda m: print(f"    {m}"),
                     on_ad=on_ad, should_stop=should_stop)

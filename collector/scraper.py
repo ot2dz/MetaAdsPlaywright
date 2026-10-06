@@ -186,9 +186,10 @@ def _iter_ads_from_html(html: str) -> list[Ad]:
 
 
 def scrape(
-    query: str,
+    query: str = "",
     country: str = "DZ",
     *,
+    url: Optional[str] = None,
     headless: bool = True,
     exact_phrase: bool = False,
     sort_mode: str = "total_impressions",
@@ -201,11 +202,15 @@ def scrape(
     on_ad: Optional[Callable[[Ad], None]] = None,
     should_stop: Optional[Callable[[], bool]] = None,
 ) -> ScrapeResult:
-    """Scrape every ad Facebook loads for `query` using a real browser."""
+    """Scrape every ad Facebook loads for `query` using a real browser.
+
+    If `url` is provided, it is used verbatim (exact Ad Library URL) and the
+    other query/sort params are ignored.
+    """
     log = progress or (lambda msg: None)
 
-    url = build_url(query, country=country, exact_phrase=exact_phrase,
-                    sort_mode=sort_mode, languages=languages)
+    target_url = url or build_url(query, country=country, exact_phrase=exact_phrase,
+                                  sort_mode=sort_mode, languages=languages)
 
     ads: dict[str, Ad] = {}
     payloads = 0
@@ -272,7 +277,7 @@ def scrape(
 
         log(f"Opening Ad Library for {query!r} ...")
         acquire()
-        page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
         page.wait_for_timeout(5000)
 
         # 1) Pull the initial batch straight out of the SSR HTML.
